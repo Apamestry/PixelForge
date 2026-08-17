@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+ffmpeg-python
+google-cloud-pubsub
+google-cloud-storage

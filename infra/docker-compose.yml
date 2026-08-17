@@ -1,0 +1,42 @@
+# Local dev only — NOT used for Cloud Run deployment.
+# Spins up services + Postgres + Redis together for local integration testing.
+# Fill in Dockerfiles per service before this works end-to-end.
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: pixelforge
+      POSTGRES_PASSWORD: localdevpassword
+      POSTGRES_DB: pixelforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  auth-service:
+    build: ../services/auth-service
+    ports:
+      - "8001:8000"
+    env_file:
+      - .env
+
+  project-service:
+    build: ../services/project-service
+    ports:
+      - "8002:8000"
+    env_file:
+      - .env
+
+  # Add asset-service, template-service, image-render-service,
+  # video-render-service, admin-service the same way as you build Dockerfiles.
+
+volumes:
+  pgdata:

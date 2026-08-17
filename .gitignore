@@ -1,0 +1,40 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+.pytest_cache/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+.env.local
+.env.*.local
+npm-debug.log*
+
+# --- Build / dist ---
+dist/
+build/
+*.log
+
+# --- GCP / secrets ---
+service-account*.json
+*-credentials.json
+.gcloud/
+*.pem
+*.key
+
+# --- OS / Editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Terraform (if used later) ---
+.terraform/
+*.tfstate
+*.tfstate.backup
