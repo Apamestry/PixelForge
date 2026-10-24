@@ -1,0 +1,72 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: pixelforge
+      POSTGRES_PASSWORD: localdevpassword
+      POSTGRES_DB: pixelforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pixelforge -d pixelforge"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  core-api:
+    build:
+      context: ./services/core-api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8080"
+    environment:
+      ENV: local
+      PORT: 8080
+      DATABASE_URL: postgresql://pixelforge:localdevpassword@postgres:5432/pixelforge
+      JWT_SECRET: dev-secret-key-pixelforge-32-chars-min
+      JWT_EXPIRE_MINUTES: 1440
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_DIR: /data
+      QUEUE_BACKEND: local
+      WORKER_URL: http://render-worker:8080
+      CORS_ORIGINS: http://localhost:3000
+    volumes:
+      - storage_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  render-worker:
+    build:
+      context: ./services/render-worker
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8080"
+    environment:
+      ENV: local
+      PORT: 8080
+      DATABASE_URL: postgresql://pixelforge:localdevpassword@postgres:5432/pixelforge
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_DIR: /data
+    volumes:
+      - storage_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  font-service:
+    build:
+      context: ./services/font-service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8080"
+    environment:
+      PORT: 8080
+
+volumes:
+  pgdata:
+  storage_data:
