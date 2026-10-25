@@ -1,4 +1,3 @@
-import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -7,11 +6,17 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./core_api.db"
     JWT_SECRET: str = "pixelforge-dev-secret-jwt-key"
     JWT_EXPIRE_MINUTES: int = 1440
-    STORAGE_BACKEND: str = "local"
+    # Storage
+    STORAGE_BACKEND: str = "local"          # "local" | "gcs"
     LOCAL_STORAGE_DIR: str = "/data"
+    GCS_BUCKET: str = ""
     SIGNED_URL_TTL_SECONDS: int = 900
-    QUEUE_BACKEND: str = "local"
-    WORKER_URL: str = "http://render-worker:8080"
+    SIGNING_SERVICE_ACCOUNT: str = ""       # needed for V4 IAM signBlob on Cloud Run
+    # Queue
+    QUEUE_BACKEND: str = "local"            # "local" | "pubsub"
+    WORKER_URL: str = "http://render-worker:8080"   # local mode only
+    PUBSUB_TOPIC: str = ""                  # full topic path, GCP mode only
+    # Network
     CORS_ORIGINS: str = "http://localhost:3000"
 
     class Config:
@@ -19,3 +24,4 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 settings = Settings()
+
