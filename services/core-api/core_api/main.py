@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from core_api.config import settings
 from core_api.database import init_db
 from core_api.logger import logger, request_id_ctx
-from core_api.routes import auth, templates, projects, assets, exports, files
+from core_api.routes import auth, templates, projects, assets, exports, files, admin
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -65,6 +65,7 @@ api_router.include_router(projects.router)
 api_router.include_router(assets.router)
 api_router.include_router(exports.router)
 api_router.include_router(files.router)
+api_router.include_router(admin.router)
 
 app.include_router(api_router)
 

@@ -16,6 +16,18 @@ const nextConfig = {
       },
     ];
   },
+  // Konva's Node.js entry tries to require 'canvas'; stub it out so the
+  // server-side bundle doesn't fail. EditorCanvas uses dynamic import with
+  // ssr:false so Konva is never actually executed on the server.
+  webpack(config, { isServer }) {
+    if (isServer) {
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        canvas: false,
+      };
+    }
+    return config;
+  },
 };
 
 module.exports = nextConfig;
