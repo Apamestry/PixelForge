@@ -12,6 +12,7 @@ import { computeZoomToFit, stepZoom, calculateWheelZoom } from "@/lib/zoomMath";
 import { loadAndRegisterFonts } from "@/lib/fontLoader";
 import { EditorSidebar } from "@/components/editor/EditorSidebar";
 import { ContextualToolbar } from "@/components/editor/ContextualToolbar";
+import { ExportModal } from "@/components/editor/ExportModal";
 import { Button, Modal, useToast } from "@/components/ui";
 import {
   ArrowLeft,
@@ -58,11 +59,7 @@ export default function EditorPage() {
   const [uploadingAsset, setUploadingAsset] = useState(false);
 
   // Export State
-  const [exportFormat, setExportFormat] = useState("png");
-  const [exportScale, setExportScale] = useState(1);
   const [exportModal, setExportModal] = useState(false);
-  const [exportJob, setExportJob] = useState(null);
-  const [exporting, setExporting] = useState(false);
 
   // Rename state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -449,49 +446,6 @@ export default function EditorPage() {
     addToast("Template applied", "success");
   }
 
-  // Export Flow
-  async function triggerExport() {
-    setExporting(true);
-    setExportJob(null);
-    setExportModal(true);
-
-    try {
-      await saveProject(canvas, project?.name);
-
-      const res = await apiFetch("/api/exports", {
-        method: "POST",
-        body: JSON.stringify({
-          projectId,
-          format: exportFormat,
-          scale: parseInt(exportScale, 10),
-        }),
-      });
-
-      if (!res.ok) throw new Error("Failed to queue export job");
-
-      const job = await res.json();
-      setExportJob(job);
-
-      const pollInterval = setInterval(async () => {
-        try {
-          const pollRes = await apiFetch(`/api/exports/${job.id}`);
-          if (pollRes.ok) {
-            const updated = await pollRes.json();
-            setExportJob(updated);
-            if (updated.status === "done" || updated.status === "failed") {
-              clearInterval(pollInterval);
-              setExporting(false);
-            }
-          }
-        } catch {
-          // Keep polling
-        }
-      }, 2000);
-    } catch {
-      setExporting(false);
-      addToast("Export failed", "error");
-    }
-  }
 
   if (!project || !canvas) {
     return (
@@ -734,101 +688,13 @@ export default function EditorPage() {
       </Modal>
 
       {/* Export Modal */}
-      <Modal
+      <ExportModal
         isOpen={exportModal}
         onClose={() => setExportModal(false)}
-        title="Export design"
-        footer={
-          <>
-            <Button variant="secondary" size="sm" onClick={() => setExportModal(false)}>
-              Close
-            </Button>
-            {(!exportJob || exportJob.status !== "done") && (
-              <Button
-                variant="primary"
-                size="sm"
-                loading={exporting}
-                onClick={triggerExport}
-              >
-                Generate export
-              </Button>
-            )}
-          </>
-        }
-      >
-        <div className="space-y-4 text-xs">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-text mb-1">Format</label>
-              <select
-                value={exportFormat}
-                onChange={(e) => setExportFormat(e.target.value)}
-                disabled={exporting}
-                className="w-full rounded border border-border bg-white px-2.5 py-1.5 text-xs text-text focus:outline-none focus:border-accent"
-              >
-                <option value="png">PNG (lossless)</option>
-                <option value="jpeg">JPEG (photo)</option>
-                <option value="pdf">PDF (document)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-text mb-1">Scale</label>
-              <select
-                value={exportScale}
-                onChange={(e) => setExportScale(parseInt(e.target.value, 10))}
-                disabled={exporting}
-                className="w-full rounded border border-border bg-white px-2.5 py-1.5 text-xs text-text focus:outline-none focus:border-accent"
-              >
-                <option value={1}>1× ({canvas.width} × {canvas.height})</option>
-                <option value={2}>2× ({canvas.width * 2} × {canvas.height * 2})</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Job Status Banner */}
-          {exportJob && (
-            <div className="rounded border border-border bg-slate-50 p-3.5 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-text-muted">Status:</span>
-                <span
-                  className={`font-semibold uppercase tracking-wider ${
-                    exportJob.status === "done"
-                      ? "text-green-600"
-                      : exportJob.status === "failed"
-                      ? "text-danger"
-                      : "text-amber-600"
-                  }`}
-                >
-                  {exportJob.status}
-                </span>
-              </div>
-
-              {exportJob.status === "processing" && (
-                <div className="flex items-center space-x-2 text-text-muted">
-                  <Loader2 size={13} strokeWidth={1.75} className="animate-spin text-accent" />
-                  <span>Rendering image...</span>
-                </div>
-              )}
-
-              {exportJob.status === "done" && exportJob.downloadUrl && (
-                <a
-                  href={exportJob.downloadUrl}
-                  download={`export.${exportFormat}`}
-                  className="mt-2 flex items-center justify-center space-x-1.5 w-full rounded bg-accent hover:bg-accent-hover py-2 font-medium text-white transition text-xs shadow-sm"
-                >
-                  <Download size={14} strokeWidth={1.75} />
-                  <span>Download {exportFormat.toUpperCase()}</span>
-                </a>
-              )}
-
-              {exportJob.status === "failed" && (
-                <p className="text-xs text-danger">{exportJob.error || "Rendering failed"}</p>
-              )}
-            </div>
-          )}
-        </div>
-      </Modal>
+        projectId={projectId}
+        canvas={canvas}
+        onSaveProject={() => saveProject(canvas, project?.name)}
+      />
     </div>
   );
 }
