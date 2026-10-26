@@ -1,43 +1,72 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { setToken, apiFetch } from "@/lib/api";
+import { setToken, getToken, apiFetch } from "@/lib/api";
+import {
+  validateEmail,
+  validatePassword,
+  validateConfirmPassword,
+  mapServerError,
+} from "@/lib/validators";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 
 export default function RegisterPage() {
+  const router = useRouter();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [touched, setTouched] = useState({ email: false, password: false, confirmPassword: false });
+  const [hasSubmitted, setHasSubmitted] = useState(false);
+  const [serverError, setServerError] = useState("");
   const [loading, setLoading] = useState(false);
-  const router = useRouter();
+
+  // Redirect away if already signed in
+  useEffect(() => {
+    if (getToken()) {
+      router.replace("/projects");
+    }
+  }, [router]);
+
+  const emailError = validateEmail(email);
+  const passwordError = validatePassword(password);
+  const confirmPasswordError = validateConfirmPassword(password, confirmPassword);
+  const isFormValid = !emailError && !passwordError && !confirmPasswordError;
+
+  const showEmailError = (touched.email || hasSubmitted) && Boolean(emailError);
+  const showPasswordError = (touched.password || hasSubmitted) && Boolean(passwordError);
+  const showConfirmError =
+    (touched.confirmPassword || hasSubmitted) && Boolean(confirmPasswordError);
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError("");
+    setHasSubmitted(true);
+    setServerError("");
 
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters");
+    if (!isFormValid) {
       return;
     }
 
     setLoading(true);
-
     try {
       const regRes = await apiFetch("/api/auth/register", {
         method: "POST",
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
 
       if (!regRes.ok) {
-        const data = await regRes.json().catch(() => ({}));
-        throw new Error(data.detail || "Registration failed");
+        const errorData = await regRes.json().catch(() => ({}));
+        throw { status: regRes.status, detail: errorData.detail };
       }
 
       // Auto login after successful registration
       const loginRes = await apiFetch("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
 
       if (loginRes.ok) {
@@ -48,71 +77,156 @@ export default function RegisterPage() {
         router.push("/login");
       }
     } catch (err) {
-      setError(err.message);
+      setServerError(mapServerError(err, "register"));
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
-      <div className="w-full max-w-md rounded-2xl bg-slate-900 p-8 shadow-2xl border border-slate-800">
-        <div className="text-center mb-8">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-600 text-white font-bold text-xl shadow-lg shadow-indigo-500/30">
-            PF
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Create an account</h1>
-          <p className="mt-2 text-sm text-slate-400">Join PixelForge and start designing</p>
+    <div className="flex min-h-screen items-center justify-center bg-page px-4">
+      <div className="w-full max-w-sm rounded border border-border bg-white p-8">
+        <div className="mb-6">
+          <h1 className="text-xl font-bold tracking-tight text-text">Create an account</h1>
+          <p className="mt-1 text-sm text-text-muted">Sign up to start designing with PixelForge</p>
         </div>
 
-        {error && (
-          <div className="mb-6 rounded-lg bg-red-500/10 border border-red-500/20 p-3 text-sm text-red-400">
-            {error}
+        {serverError && (
+          <div
+            role="alert"
+            aria-live="polite"
+            className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-danger"
+          >
+            {serverError}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-              Email Address
+            <label htmlFor="reg-email" className="block text-xs font-medium text-text mb-1">
+              Email
             </label>
             <input
+              id="reg-email"
               type="email"
+              autoComplete="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded-lg bg-slate-800 border border-slate-700 px-3.5 py-2.5 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 text-sm"
-              placeholder="you@example.com"
+              onBlur={() => setTouched((prev) => ({ ...prev, email: true }))}
+              aria-invalid={showEmailError}
+              aria-describedby={showEmailError ? "reg-email-error" : undefined}
+              className={`w-full rounded border px-3 py-2 text-sm text-text placeholder-slate-400 focus:outline-none focus:ring-2 transition ${
+                showEmailError
+                  ? "border-danger focus:border-danger focus:ring-red-100"
+                  : "border-border focus:border-accent focus:ring-slate-100"
+              }`}
+              placeholder="name@example.com"
             />
+            {showEmailError && (
+              <p id="reg-email-error" aria-live="polite" className="mt-1 text-xs text-danger">
+                {emailError}
+              </p>
+            )}
           </div>
 
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-              Password (min 8 chars)
+            <label htmlFor="reg-password" className="block text-xs font-medium text-text mb-1">
+              Password
             </label>
-            <input
-              type="password"
-              required
-              minLength={8}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-lg bg-slate-800 border border-slate-700 px-3.5 py-2.5 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 text-sm"
-              placeholder="••••••••"
-            />
+            <div className="relative">
+              <input
+                id="reg-password"
+                type={showPassword ? "text" : "password"}
+                autoComplete="new-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onBlur={() => setTouched((prev) => ({ ...prev, password: true }))}
+                aria-invalid={showPasswordError}
+                aria-describedby={showPasswordError ? "reg-password-error" : undefined}
+                className={`w-full rounded border px-3 py-2 pr-10 text-sm text-text placeholder-slate-400 focus:outline-none focus:ring-2 transition ${
+                  showPasswordError
+                    ? "border-danger focus:border-danger focus:ring-red-100"
+                    : "border-border focus:border-accent focus:ring-slate-100"
+                }`}
+                placeholder="At least 8 characters"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                className="absolute right-2.5 top-2.5 text-text-muted hover:text-text focus:outline-none"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? (
+                  <EyeOff size={18} strokeWidth={1.75} />
+                ) : (
+                  <Eye size={18} strokeWidth={1.75} />
+                )}
+              </button>
+            </div>
+            {showPasswordError && (
+              <p id="reg-password-error" aria-live="polite" className="mt-1 text-xs text-danger">
+                {passwordError}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label htmlFor="reg-confirm-password" className="block text-xs font-medium text-text mb-1">
+              Confirm password
+            </label>
+            <div className="relative">
+              <input
+                id="reg-confirm-password"
+                type={showConfirmPassword ? "text" : "password"}
+                autoComplete="new-password"
+                required
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                onBlur={() => setTouched((prev) => ({ ...prev, confirmPassword: true }))}
+                aria-invalid={showConfirmError}
+                aria-describedby={showConfirmError ? "reg-confirm-error" : undefined}
+                className={`w-full rounded border px-3 py-2 pr-10 text-sm text-text placeholder-slate-400 focus:outline-none focus:ring-2 transition ${
+                  showConfirmError
+                    ? "border-danger focus:border-danger focus:ring-red-100"
+                    : "border-border focus:border-accent focus:ring-slate-100"
+                }`}
+                placeholder="Re-enter password"
+              />
+              <button
+                type="button"
+                onClick={() => setShowConfirmPassword((prev) => !prev)}
+                className="absolute right-2.5 top-2.5 text-text-muted hover:text-text focus:outline-none"
+                aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+              >
+                {showConfirmPassword ? (
+                  <EyeOff size={18} strokeWidth={1.75} />
+                ) : (
+                  <Eye size={18} strokeWidth={1.75} />
+                )}
+              </button>
+            </div>
+            {showConfirmError && (
+              <p id="reg-confirm-error" aria-live="polite" className="mt-1 text-xs text-danger">
+                {confirmPasswordError}
+              </p>
+            )}
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-lg bg-indigo-600 hover:bg-indigo-500 py-2.5 px-4 font-semibold text-white shadow-lg shadow-indigo-600/30 transition duration-150 disabled:opacity-50 text-sm"
+            className="w-full flex items-center justify-center space-x-2 rounded bg-accent hover:bg-accent-hover text-white py-2 px-4 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-accent/20"
           >
-            {loading ? "Creating account..." : "Sign up"}
+            {loading && <Loader2 size={16} strokeWidth={1.75} className="animate-spin" />}
+            <span>{loading ? "Creating account..." : "Create account"}</span>
           </button>
         </form>
 
-        <p className="mt-8 text-center text-sm text-slate-400">
+        <p className="mt-6 text-center text-sm text-text-muted">
           Already have an account?{" "}
-          <Link href="/login" className="font-semibold text-indigo-400 hover:text-indigo-300 transition">
+          <Link href="/login" className="font-medium text-accent hover:underline">
             Sign in
           </Link>
         </p>

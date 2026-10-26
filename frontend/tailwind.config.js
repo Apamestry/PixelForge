@@ -8,19 +8,33 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        brand: {
-          50: "#EEF2FF",
-          100: "#E0E7FF",
-          500: "#6366F1",
-          600: "#4F46E5",
-          700: "#4338CA",
+        page: "#F7FAFC",
+        text: {
+          DEFAULT: "#0F172A",
+          muted: "#475569",
         },
-        dark: {
-          900: "#0F172A",
-          800: "#1E293B",
-          700: "#334155",
-        }
-      }
+        border: {
+          DEFAULT: "#E2E8F0",
+        },
+        accent: {
+          DEFAULT: "#065A82",
+          hover: "#054A6B",
+        },
+        danger: {
+          DEFAULT: "#B91C1C",
+          hover: "#991B1B",
+        },
+      },
+      borderRadius: {
+        DEFAULT: "6px",
+        sm: "4px",
+        md: "6px",
+        lg: "8px",
+      },
+      fontSize: {
+        body: ["14px", { lineHeight: "20px" }],
+        panel: ["13px", { lineHeight: "18px" }],
+      },
     },
   },
   plugins: [],

@@ -1,101 +1,170 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { setToken, apiFetch } from "@/lib/api";
+import { setToken, getToken, apiFetch } from "@/lib/api";
+import { validateEmail, validatePassword, mapServerError } from "@/lib/validators";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 
 export default function LoginPage() {
+  const router = useRouter();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [touched, setTouched] = useState({ email: false, password: false });
+  const [hasSubmitted, setHasSubmitted] = useState(false);
+  const [serverError, setServerError] = useState("");
   const [loading, setLoading] = useState(false);
-  const router = useRouter();
+
+  // Redirect away if already signed in
+  useEffect(() => {
+    if (getToken()) {
+      router.replace("/projects");
+    }
+  }, [router]);
+
+  const emailError = validateEmail(email);
+  const passwordError = validatePassword(password);
+  const isFormValid = !emailError && !passwordError;
+
+  const showEmailError = (touched.email || hasSubmitted) && Boolean(emailError);
+  const showPasswordError = (touched.password || hasSubmitted) && Boolean(passwordError);
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError("");
-    setLoading(true);
+    setHasSubmitted(true);
+    setServerError("");
 
+    if (!isFormValid) {
+      return;
+    }
+
+    setLoading(true);
     try {
       const res = await apiFetch("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Login failed");
+        const errorData = await res.json().catch(() => ({}));
+        throw { status: res.status, detail: errorData.detail };
       }
 
       const data = await res.json();
       setToken(data.access_token);
       router.push("/projects");
     } catch (err) {
-      setError(err.message);
+      setServerError(mapServerError(err, "login"));
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
-      <div className="w-full max-w-md rounded-2xl bg-slate-900 p-8 shadow-2xl border border-slate-800">
-        <div className="text-center mb-8">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-600 text-white font-bold text-xl shadow-lg shadow-indigo-500/30">
-            PF
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Sign in to PixelForge</h1>
-          <p className="mt-2 text-sm text-slate-400">Cloud-native image design platform</p>
+    <div className="flex min-h-screen items-center justify-center bg-page px-4">
+      <div className="w-full max-w-sm rounded border border-border bg-white p-8">
+        <div className="mb-6">
+          <h1 className="text-xl font-bold tracking-tight text-text">Sign in to PixelForge</h1>
+          <p className="mt-1 text-sm text-text-muted">Enter your email and password to continue</p>
         </div>
 
-        {error && (
-          <div className="mb-6 rounded-lg bg-red-500/10 border border-red-500/20 p-3 text-sm text-red-400">
-            {error}
+        {serverError && (
+          <div
+            role="alert"
+            aria-live="polite"
+            className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-danger"
+          >
+            {serverError}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-              Email Address
+            <label htmlFor="email" className="block text-xs font-medium text-text mb-1">
+              Email
             </label>
             <input
+              id="email"
               type="email"
+              autoComplete="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded-lg bg-slate-800 border border-slate-700 px-3.5 py-2.5 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 text-sm"
-              placeholder="you@example.com"
+              onBlur={() => setTouched((prev) => ({ ...prev, email: true }))}
+              aria-invalid={showEmailError}
+              aria-describedby={showEmailError ? "email-error" : undefined}
+              className={`w-full rounded border px-3 py-2 text-sm text-text placeholder-slate-400 focus:outline-none focus:ring-2 transition ${
+                showEmailError
+                  ? "border-danger focus:border-danger focus:ring-red-100"
+                  : "border-border focus:border-accent focus:ring-slate-100"
+              }`}
+              placeholder="name@example.com"
             />
+            {showEmailError && (
+              <p id="email-error" aria-live="polite" className="mt-1 text-xs text-danger">
+                {emailError}
+              </p>
+            )}
           </div>
 
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+            <label htmlFor="password" className="block text-xs font-medium text-text mb-1">
               Password
             </label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-lg bg-slate-800 border border-slate-700 px-3.5 py-2.5 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 text-sm"
-              placeholder="••••••••"
-            />
+            <div className="relative">
+              <input
+                id="password"
+                type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onBlur={() => setTouched((prev) => ({ ...prev, password: true }))}
+                aria-invalid={showPasswordError}
+                aria-describedby={showPasswordError ? "password-error" : undefined}
+                className={`w-full rounded border px-3 py-2 pr-10 text-sm text-text placeholder-slate-400 focus:outline-none focus:ring-2 transition ${
+                  showPasswordError
+                    ? "border-danger focus:border-danger focus:ring-red-100"
+                    : "border-border focus:border-accent focus:ring-slate-100"
+                }`}
+                placeholder="At least 8 characters"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                className="absolute right-2.5 top-2.5 text-text-muted hover:text-text focus:outline-none"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? (
+                  <EyeOff size={18} strokeWidth={1.75} />
+                ) : (
+                  <Eye size={18} strokeWidth={1.75} />
+                )}
+              </button>
+            </div>
+            {showPasswordError && (
+              <p id="password-error" aria-live="polite" className="mt-1 text-xs text-danger">
+                {passwordError}
+              </p>
+            )}
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-lg bg-indigo-600 hover:bg-indigo-500 py-2.5 px-4 font-semibold text-white shadow-lg shadow-indigo-600/30 transition duration-150 disabled:opacity-50 text-sm"
+            className="w-full flex items-center justify-center space-x-2 rounded bg-accent hover:bg-accent-hover text-white py-2 px-4 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-accent/20"
           >
-            {loading ? "Signing in..." : "Sign in"}
+            {loading && <Loader2 size={16} strokeWidth={1.75} className="animate-spin" />}
+            <span>{loading ? "Signing in..." : "Sign in"}</span>
           </button>
         </form>
 
-        <p className="mt-8 text-center text-sm text-slate-400">
+        <p className="mt-6 text-center text-sm text-text-muted">
           Don&apos;t have an account?{" "}
-          <Link href="/register" className="font-semibold text-indigo-400 hover:text-indigo-300 transition">
+          <Link href="/register" className="font-medium text-accent hover:underline">
             Create an account
           </Link>
         </p>

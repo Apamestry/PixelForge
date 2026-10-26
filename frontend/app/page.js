@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { getToken } from "@/lib/api";
+import { Loader2 } from "lucide-react";
 
 export default function Home() {
   const router = useRouter();
@@ -17,10 +18,10 @@ export default function Home() {
   }, [router]);
 
   return (
-    <div className="flex h-screen items-center justify-center bg-slate-900">
-      <div className="text-center">
-        <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent"></div>
-        <p className="mt-4 text-sm text-slate-400">Loading PixelForge...</p>
+    <div className="flex h-screen items-center justify-center bg-page">
+      <div className="text-center text-text-muted flex flex-col items-center space-y-3">
+        <Loader2 className="animate-spin text-accent" size={24} strokeWidth={1.75} />
+        <p className="text-sm">Loading PixelForge...</p>
       </div>
     </div>
   );
