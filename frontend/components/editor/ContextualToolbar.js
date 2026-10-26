@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import {
   Bold,
   AlignLeft,
@@ -12,6 +12,14 @@ import {
   Trash2,
 } from "lucide-react";
 
+const CANVAS_PRESETS = [
+  { label: "Instagram post (1080 × 1080)", width: 1080, height: 1080 },
+  { label: "Poster (1080 × 1350)", width: 1080, height: 1350 },
+  { label: "YouTube thumbnail (1280 × 720)", width: 1280, height: 720 },
+  { label: "LinkedIn banner (1584 × 396)", width: 1584, height: 396 },
+  { label: "Infographic (800 × 2000)", width: 800, height: 2000 },
+];
+
 export function ContextualToolbar({
   selectedElement,
   canvas,
@@ -21,33 +29,87 @@ export function ContextualToolbar({
   onDeleteElement,
   onReorderElement,
   onSetBackground,
+  onSetCanvasSize,
 }) {
+  const [customW, setCustomW] = useState(canvas?.width || 1080);
+  const [customH, setCustomH] = useState(canvas?.height || 1080);
+
+  // If no element is selected, display Design toolbar
   if (!selectedElement) {
     return (
-      <div className="h-11 border-b border-border bg-white px-4 flex items-center justify-between text-xs text-text select-none">
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-2">
-            <span className="text-text-muted">Background:</span>
-            <div className="flex items-center space-x-1.5">
-              <input
-                type="color"
-                value={canvas?.background || "#FFFFFF"}
-                onChange={(e) => onSetBackground(e.target.value)}
-                className="h-6 w-6 rounded border border-border bg-transparent cursor-pointer"
-                title="Canvas background color"
-              />
-              <span className="font-mono text-[11px] text-text-muted uppercase">
-                {canvas?.background || "#FFFFFF"}
-              </span>
-            </div>
-          </div>
-        </div>
+      <div className="h-11 border-b border-border bg-white px-4 flex items-center justify-between text-xs text-text select-none overflow-x-auto">
+        <div className="flex items-center space-x-6">
+          <span className="font-semibold text-xs text-text">Design:</span>
 
-        <div className="flex items-center space-x-2 text-text-muted font-mono text-[11px]">
-          <span>Artboard:</span>
-          <span className="font-semibold text-text">
-            {canvas?.width} × {canvas?.height} px
-          </span>
+          {/* Background color picker */}
+          <div className="flex items-center space-x-1.5">
+            <span className="text-text-muted">Background:</span>
+            <input
+              type="color"
+              value={canvas?.background || "#FFFFFF"}
+              onChange={(e) => onSetBackground(e.target.value)}
+              className="h-6 w-6 rounded border border-border bg-transparent cursor-pointer"
+              title="Canvas background color"
+            />
+            <span className="font-mono text-[11px] text-text-muted uppercase">
+              {canvas?.background || "#FFFFFF"}
+            </span>
+          </div>
+
+          {/* Size preset dropdown */}
+          <div className="flex items-center space-x-1.5 pl-3 border-l border-border">
+            <span className="text-text-muted">Preset:</span>
+            <select
+              onChange={(e) => {
+                const val = e.target.value;
+                if (!val) return;
+                const [w, h] = val.split("x").map(Number);
+                onSetCanvasSize({ width: w, height: h });
+                setCustomW(w);
+                setCustomH(h);
+              }}
+              className="h-7 rounded border border-border bg-white px-2 text-xs text-text focus:outline-none focus:border-accent"
+              value=""
+            >
+              <option value="" disabled>
+                Select preset...
+              </option>
+              {CANVAS_PRESETS.map((p) => (
+                <option key={p.label} value={`${p.width}x${p.height}`}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Custom dimensions */}
+          <div className="flex items-center space-x-1.5 pl-3 border-l border-border font-mono text-[11px]">
+            <span className="text-text-muted font-sans text-xs">Dimensions:</span>
+            <input
+              type="number"
+              min={100}
+              max={4000}
+              value={customW}
+              onChange={(e) => setCustomW(e.target.value)}
+              onBlur={() => onSetCanvasSize({ width: customW, height: customH })}
+              onKeyDown={(e) => e.key === "Enter" && onSetCanvasSize({ width: customW, height: customH })}
+              className="h-7 w-14 rounded border border-border px-1 text-center text-xs text-text focus:outline-none focus:border-accent"
+              title="Canvas width (px)"
+            />
+            <span className="text-text-muted">×</span>
+            <input
+              type="number"
+              min={100}
+              max={4000}
+              value={customH}
+              onChange={(e) => setCustomH(e.target.value)}
+              onBlur={() => onSetCanvasSize({ width: customW, height: customH })}
+              onKeyDown={(e) => e.key === "Enter" && onSetCanvasSize({ width: customW, height: customH })}
+              className="h-7 w-14 rounded border border-border px-1 text-center text-xs text-text focus:outline-none focus:border-accent"
+              title="Canvas height (px)"
+            />
+            <span className="text-text-muted">px</span>
+          </div>
         </div>
       </div>
     );

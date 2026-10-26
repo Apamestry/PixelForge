@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
-import { Stage, Layer, Rect, Ellipse, Text, Image as KonvaImage, Transformer } from "react-konva";
+import { Stage, Layer, Rect, Ellipse, Text, Image as KonvaImage, Transformer, Line } from "react-konva";
 import { ensureFontLoaded } from "@/lib/fontLoader";
 
 // Helper hook to load HTML Image with crossOrigin = "anonymous"
@@ -25,7 +25,7 @@ function useHtmlImage(src) {
 }
 
 // Single Image Element with crossOrigin = "anonymous" and filters
-function CanvasImageElement({ element, assetUrl, isSelected, onSelect, onChange, onDragMove }) {
+function CanvasImageElement({ element, assetUrl, isSelected, onSelect, onChange, onDragMove, onDragEnd }) {
   const imageRef = useRef();
   const htmlImg = useHtmlImage(assetUrl);
 
@@ -45,6 +45,7 @@ function CanvasImageElement({ element, assetUrl, isSelected, onSelect, onChange,
       onTap={onSelect}
       onDragMove={onDragMove}
       onDragEnd={(e) => {
+        if (onDragEnd) onDragEnd();
         onChange({
           ...element,
           x: Math.round(e.target.x()),
@@ -82,6 +83,7 @@ function CanvasTextElement({
   onDoubleClick,
   onChange,
   onDragMove,
+  onDragEnd,
 }) {
   const textRef = useRef();
 
@@ -119,6 +121,7 @@ function CanvasTextElement({
       onDblTap={onDoubleClick}
       onDragMove={onDragMove}
       onDragEnd={(e) => {
+        if (onDragEnd) onDragEnd();
         onChange({
           ...element,
           x: Math.round(e.target.x()),
@@ -146,7 +149,7 @@ function CanvasTextElement({
 }
 
 // Single Shape Element (Rect or Ellipse)
-function CanvasShapeElement({ element, isSelected, onSelect, onChange, onDragMove }) {
+function CanvasShapeElement({ element, isSelected, onSelect, onChange, onDragMove, onDragEnd }) {
   const shapeRef = useRef();
 
   if (element.shape === "ellipse") {
@@ -168,6 +171,7 @@ function CanvasShapeElement({ element, isSelected, onSelect, onChange, onDragMov
         onTap={onSelect}
         onDragMove={onDragMove}
         onDragEnd={(e) => {
+          if (onDragEnd) onDragEnd();
           onChange({
             ...element,
             x: Math.round(e.target.x() - element.width / 2),
@@ -219,6 +223,7 @@ function CanvasShapeElement({ element, isSelected, onSelect, onChange, onDragMov
       onTap={onSelect}
       onDragMove={onDragMove}
       onDragEnd={(e) => {
+        if (onDragEnd) onDragEnd();
         onChange({
           ...element,
           x: Math.round(e.target.x()),
@@ -251,10 +256,12 @@ export default function EditorCanvas({
   canvas,
   assetUrls = {},
   selectedId,
+  snapGuides = [],
   onSelectElement,
   onUpdateElement,
   onDropElement,
   onDragMoveElement,
+  onDragEndClearGuides,
   stageScale = 1.0,
 }) {
   const stageRef = useRef();
@@ -373,6 +380,7 @@ export default function EditorCanvas({
                     onSelect={() => onSelectElement(el.id)}
                     onChange={onUpdateElement}
                     onDragMove={onDragMoveElement}
+                    onDragEnd={onDragEndClearGuides}
                   />
                 );
               }
@@ -387,6 +395,7 @@ export default function EditorCanvas({
                     onDoubleClick={() => startEditingText(el)}
                     onChange={onUpdateElement}
                     onDragMove={onDragMoveElement}
+                    onDragEnd={onDragEndClearGuides}
                   />
                 );
               }
@@ -400,6 +409,7 @@ export default function EditorCanvas({
                     onSelect={() => onSelectElement(el.id)}
                     onChange={onUpdateElement}
                     onDragMove={onDragMoveElement}
+                    onDragEnd={onDragEndClearGuides}
                   />
                 );
               }
@@ -423,6 +433,29 @@ export default function EditorCanvas({
                 return newBox;
               }}
             />
+
+            {/* Snap guide lines during drag */}
+            {snapGuides.map((guide, i) =>
+              guide.orientation === "vertical" ? (
+                <Line
+                  key={`snap-v-${i}`}
+                  points={[guide.position, 0, guide.position, height]}
+                  stroke="#00BCD4"
+                  strokeWidth={1 / stageScale}
+                  dash={[4 / stageScale, 4 / stageScale]}
+                  listening={false}
+                />
+              ) : (
+                <Line
+                  key={`snap-h-${i}`}
+                  points={[0, guide.position, width, guide.position]}
+                  stroke="#00BCD4"
+                  strokeWidth={1 / stageScale}
+                  dash={[4 / stageScale, 4 / stageScale]}
+                  listening={false}
+                />
+              )
+            )}
           </Layer>
         </Stage>
 

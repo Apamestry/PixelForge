@@ -7,6 +7,7 @@ import { useParams, useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { computeDropPosition, computeCenterPosition, createNewElement } from "@/lib/dropPosition";
 import { editorReducer, initialEditorState } from "@/lib/editorState";
+import { computeSnapping } from "@/lib/snapping";
 import { computeZoomToFit, stepZoom, calculateWheelZoom } from "@/lib/zoomMath";
 import { loadAndRegisterFonts } from "@/lib/fontLoader";
 import { EditorSidebar } from "@/components/editor/EditorSidebar";
@@ -70,6 +71,9 @@ export default function EditorPage() {
   const workspaceRef = useRef(null);
   const autosaveTimerRef = useRef(null);
   const isInitialLoadedRef = useRef(false);
+
+  // Snapping guides during drag
+  const [snapGuides, setSnapGuides] = useState([]);
 
   // 1. Initial Load: Project + Asset URLs + Fonts + Templates + User Assets
   useEffect(() => {
@@ -201,6 +205,108 @@ export default function EditorPage() {
     if (!isInitialLoadedRef.current || !canvas) return;
     triggerAutosave(canvas);
   }, [canvas, triggerAutosave]);
+
+  // Keyboard Shortcuts
+  useEffect(() => {
+    function handleKeyDown(e) {
+      // Ignore shortcuts while user is typing in an input/textarea/contenteditable
+      const tag = e.target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
+
+      const isMod = e.metaKey || e.ctrlKey;
+
+      // Delete / Backspace -> delete selected element
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+        e.preventDefault();
+        dispatch({ type: "DELETE_ELEMENT" });
+        return;
+      }
+
+      // Cmd/Ctrl + Z -> Undo (Shift variant -> Redo)
+      if (isMod && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        dispatch({ type: "UNDO" });
+        return;
+      }
+
+      // Cmd/Ctrl + Shift + Z OR Cmd/Ctrl + Y -> Redo
+      if ((isMod && e.key === "z" && e.shiftKey) || (isMod && e.key === "y")) {
+        e.preventDefault();
+        dispatch({ type: "REDO" });
+        return;
+      }
+
+      // Cmd/Ctrl + D -> Duplicate
+      if (isMod && e.key === "d" && selectedId) {
+        e.preventDefault();
+        dispatch({ type: "DUPLICATE_ELEMENT" });
+        return;
+      }
+
+      // Escape -> Deselect
+      if (e.key === "Escape") {
+        dispatch({ type: "SELECT_ELEMENT", payload: null });
+        return;
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedId, dispatch]);
+
+  // beforeunload guard - warn if there are unsaved changes
+  useEffect(() => {
+    function handleBeforeUnload(e) {
+      if (saveStatus === "Saving..." || saveStatus === "Not saved, retry") {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [saveStatus]);
+
+  // Snapping on drag-move handler (passed to EditorCanvas)
+  const handleDragMoveElement = useCallback(
+    (e) => {
+      if (!canvas) return;
+      const node = e.target;
+      const dragging = {
+        id: node.id(),
+        x: node.x(),
+        y: node.y(),
+        width: node.width ? node.width() : 100,
+        height: node.height ? node.height() : 100,
+      };
+
+      const others = canvas.elements
+        .filter((el) => el.id !== dragging.id)
+        .map((el) => ({
+          id: el.id,
+          x: el.x,
+          y: el.y,
+          width: el.width || 100,
+          height: el.height || el.width || 100,
+        }));
+
+      const { x, y, guides } = computeSnapping(
+        dragging,
+        others,
+        canvas.width,
+        canvas.height
+      );
+
+      node.x(x);
+      node.y(y);
+      setSnapGuides(guides);
+    },
+    [canvas]
+  );
+
+  // Clear snap guides on drag end (called from EditorCanvas)
+  const handleDragEndClearGuides = useCallback(() => {
+    setSnapGuides([]);
+  }, []);
 
   // Handle title rename submit
   async function handleTitleSave() {
@@ -543,6 +649,9 @@ export default function EditorPage() {
             onSetBackground={(color) =>
               dispatch({ type: "SET_CANVAS_BACKGROUND", payload: color })
             }
+            onSetCanvasSize={({ width, height }) =>
+              dispatch({ type: "SET_CANVAS_SIZE", payload: { width, height } })
+            }
           />
 
           {/* Centered Workspace Artboard */}
@@ -551,9 +660,12 @@ export default function EditorPage() {
               canvas={canvas}
               assetUrls={assetUrls}
               selectedId={selectedId}
+              snapGuides={snapGuides}
               onSelectElement={(id) => dispatch({ type: "SELECT_ELEMENT", payload: id })}
               onUpdateElement={(updated) => dispatch({ type: "UPDATE_ELEMENT", payload: updated })}
               onDropElement={handleDropElement}
+              onDragMoveElement={handleDragMoveElement}
+              onDragEndClearGuides={handleDragEndClearGuides}
               stageScale={scaleFactor}
             />
 
