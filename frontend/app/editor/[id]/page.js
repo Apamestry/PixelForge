@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useReducer } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { computeDropPosition, computeCenterPosition, createNewElement } from "@/lib/dropPosition";
+import { editorReducer, initialEditorState } from "@/lib/editorState";
 import {
   ArrowLeft,
   Save,
@@ -20,6 +21,8 @@ import {
   Trash2,
   Check,
   Loader2,
+  Undo2,
+  Redo2,
   Image as ImageIcon
 } from "lucide-react";
 
@@ -37,12 +40,13 @@ export default function EditorPage() {
   const { id: projectId } = useParams();
   const router = useRouter();
 
+  const [editorState, dispatch] = useReducer(editorReducer, initialEditorState);
+  const { canvas, selectedId, history } = editorState;
+
   const [project, setProject] = useState(null);
-  const [canvas, setCanvas] = useState(null);
   const [assetUrls, setAssetUrls] = useState({});
   const [userAssets, setUserAssets] = useState([]);
   const [fontsList, setFontsList] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
   const [saveStatus, setSaveStatus] = useState("Saved"); // "Saved" | "Saving..." | "Unsaved"
   const [scaleFactor, setScaleFactor] = useState(0.7);
 
@@ -54,6 +58,7 @@ export default function EditorPage() {
   const [exporting, setExporting] = useState(false);
 
   const autosaveTimerRef = useRef(null);
+  const isInitialLoadedRef = useRef(false);
 
   // 1. Initial Load: Project + Fresh Asset URLs + Font Catalog + My Assets
   useEffect(() => {
@@ -73,8 +78,9 @@ export default function EditorPage() {
         if (projRes.ok) {
           const data = await projRes.json();
           setProject(data);
-          setCanvas(data.canvas);
+          dispatch({ type: "SET_CANVAS", payload: data.canvas });
           setAssetUrls(data.assetUrls || {});
+          isInitialLoadedRef.current = true;
         }
 
         if (fontsRes.ok) {
@@ -118,7 +124,7 @@ export default function EditorPage() {
       console.error("Save failed", err);
       setSaveStatus("Error saving");
     }
-  }, [canvas, project, projectId]);
+  }, [canvas, project?.name, projectId]);
 
   // Autosave after 3 seconds idle
   const triggerAutosave = useCallback((newCanvas) => {
@@ -131,25 +137,21 @@ export default function EditorPage() {
     }, 3000);
   }, [saveProject, project?.name]);
 
+  // Trigger autosave whenever canvas changes after initial load
+  useEffect(() => {
+    if (!isInitialLoadedRef.current || !canvas) return;
+    triggerAutosave(canvas);
+  }, [canvas, triggerAutosave]);
+
   const deleteSelectedElement = useCallback(() => {
     if (!selectedId) return;
-    setCanvas((prev) => {
-      if (!prev) return prev;
-      const nextCanvas = {
-        ...prev,
-        elements: prev.elements.filter((el) => el.id !== selectedId),
-      };
-      triggerAutosave(nextCanvas);
-      return nextCanvas;
-    });
-    setSelectedId(null);
-  }, [selectedId, triggerAutosave]);
+    dispatch({ type: "DELETE_ELEMENT", payload: selectedId });
+  }, [selectedId]);
 
   // Keyboard listener for Delete / Backspace
   useEffect(() => {
     function handleKeyDown(e) {
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-        // Only if not typing in an input or textarea
         if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
           return;
         }
@@ -162,16 +164,8 @@ export default function EditorPage() {
   }, [selectedId, deleteSelectedElement]);
 
   // Element Mutation Helpers
-  function handleUpdateElement(updatedEl) {
-    setCanvas((prevCanvas) => {
-      if (!prevCanvas) return prevCanvas;
-      const nextElements = prevCanvas.elements.map((el) =>
-        el.id === updatedEl.id ? { ...el, ...updatedEl } : el
-      );
-      const nextCanvas = { ...prevCanvas, elements: nextElements };
-      triggerAutosave(nextCanvas);
-      return nextCanvas;
-    });
+  function handleUpdateElement(updatedEl, coalesce = false) {
+    dispatch({ type: "UPDATE_ELEMENT", payload: updatedEl, coalesce });
   }
 
   function addTextElement() {
@@ -183,13 +177,7 @@ export default function EditorPage() {
       width: 400,
       fontFamily: fontsList[0]?.family || "Roboto",
     });
-    setCanvas((prevCanvas) => {
-      if (!prevCanvas) return prevCanvas;
-      const nextCanvas = { ...prevCanvas, elements: [...prevCanvas.elements, newEl] };
-      triggerAutosave(nextCanvas);
-      return nextCanvas;
-    });
-    setSelectedId(newEl.id);
+    dispatch({ type: "ADD_ELEMENT", payload: newEl });
   }
 
   function addShapeElement(shapeType) {
@@ -204,13 +192,7 @@ export default function EditorPage() {
       width,
       height,
     });
-    setCanvas((prevCanvas) => {
-      if (!prevCanvas) return prevCanvas;
-      const nextCanvas = { ...prevCanvas, elements: [...prevCanvas.elements, newEl] };
-      triggerAutosave(nextCanvas);
-      return nextCanvas;
-    });
-    setSelectedId(newEl.id);
+    dispatch({ type: "ADD_ELEMENT", payload: newEl });
   }
 
   function addImageElement(asset) {
@@ -226,13 +208,7 @@ export default function EditorPage() {
       height,
     });
     setAssetUrls((prev) => ({ ...prev, [asset.id]: asset.url }));
-    setCanvas((prevCanvas) => {
-      if (!prevCanvas) return prevCanvas;
-      const nextCanvas = { ...prevCanvas, elements: [...prevCanvas.elements, newEl] };
-      triggerAutosave(nextCanvas);
-      return nextCanvas;
-    });
-    setSelectedId(newEl.id);
+    dispatch({ type: "ADD_ELEMENT", payload: newEl });
   }
 
   function handleDropElement(payload, pointerPosition) {
@@ -261,13 +237,12 @@ export default function EditorPage() {
       fontFamily: payload.type === "text" ? (fontsList[0]?.family || "Roboto") : undefined,
     });
 
-    setCanvas((prevCanvas) => {
-      if (!prevCanvas) return prevCanvas;
-      const nextCanvas = { ...prevCanvas, elements: [...prevCanvas.elements, newEl] };
-      triggerAutosave(nextCanvas);
-      return nextCanvas;
-    });
-    setSelectedId(newEl.id);
+    dispatch({ type: "ADD_ELEMENT", payload: newEl });
+  }
+
+  function moveSelectedLayer(direction) {
+    if (!selectedId) return;
+    dispatch({ type: "REORDER_ELEMENT", payload: { id: selectedId, direction } });
   }
 
   async function handleAssetUpload(e) {
@@ -394,6 +369,25 @@ export default function EditorPage() {
             <span className={saveStatus === "Saved" ? "text-slate-400" : "text-amber-400"}>
               {saveStatus}
             </span>
+          </div>
+
+          <div className="flex items-center space-x-1 pl-2 border-l border-slate-800">
+            <button
+              onClick={() => dispatch({ type: "UNDO" })}
+              disabled={history.past.length === 0}
+              className="p-1.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition"
+              title="Undo (Ctrl/Cmd+Z)"
+            >
+              <Undo2 size={16} />
+            </button>
+            <button
+              onClick={() => dispatch({ type: "REDO" })}
+              disabled={history.future.length === 0}
+              className="p-1.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition"
+              title="Redo (Ctrl/Cmd+Y / Shift+Z)"
+            >
+              <Redo2 size={16} />
+            </button>
           </div>
         </div>
 
@@ -576,7 +570,7 @@ export default function EditorPage() {
             canvas={canvas}
             assetUrls={assetUrls}
             selectedId={selectedId}
-            onSelectElement={(id) => setSelectedId(id)}
+            onSelectElement={(id) => dispatch({ type: "SELECT_ELEMENT", payload: id })}
             onUpdateElement={handleUpdateElement}
             onDropElement={handleDropElement}
             stageScale={scaleFactor}
@@ -928,9 +922,7 @@ export default function EditorPage() {
                       type="color"
                       value={canvas.background || "#FFFFFF"}
                       onChange={(e) => {
-                        const nextCanvas = { ...canvas, background: e.target.value };
-                        setCanvas(nextCanvas);
-                        triggerAutosave(nextCanvas);
+                        dispatch({ type: "SET_CANVAS_BACKGROUND", payload: e.target.value });
                       }}
                       className="h-7 w-7 rounded border border-slate-700 bg-transparent cursor-pointer"
                     />
