@@ -7,31 +7,30 @@ import { useParams, useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { computeDropPosition, computeCenterPosition, createNewElement } from "@/lib/dropPosition";
 import { editorReducer, initialEditorState } from "@/lib/editorState";
+import { computeZoomToFit, stepZoom, calculateWheelZoom } from "@/lib/zoomMath";
+import { loadAndRegisterFonts } from "@/lib/fontLoader";
+import { EditorSidebar } from "@/components/editor/EditorSidebar";
+import { ContextualToolbar } from "@/components/editor/ContextualToolbar";
+import { Button, Modal, useToast } from "@/components/ui";
 import {
   ArrowLeft,
-  Save,
   Download,
-  Type,
-  Square,
-  Circle,
-  Upload,
-  Layers,
-  ChevronUp,
-  ChevronDown,
-  Trash2,
-  Check,
   Loader2,
   Undo2,
   Redo2,
-  Image as ImageIcon
+  Minus,
+  Plus,
+  Maximize2,
+  AlertCircle,
+  CheckCircle2,
 } from "lucide-react";
 
 // Dynamically import EditorCanvas with ssr: false
 const EditorCanvas = dynamic(() => import("@/components/EditorCanvas"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full w-full items-center justify-center">
-      <Loader2 className="animate-spin text-indigo-500" size={32} />
+    <div className="flex h-full w-full items-center justify-center bg-[#E9EDF2]">
+      <Loader2 className="animate-spin text-accent" size={28} strokeWidth={1.75} />
     </div>
   ),
 });
@@ -39,6 +38,7 @@ const EditorCanvas = dynamic(() => import("@/components/EditorCanvas"), {
 export default function EditorPage() {
   const { id: projectId } = useParams();
   const router = useRouter();
+  const { addToast } = useToast();
 
   const [editorState, dispatch] = useReducer(editorReducer, initialEditorState);
   const { canvas, selectedId, history } = editorState;
@@ -46,9 +46,15 @@ export default function EditorPage() {
   const [project, setProject] = useState(null);
   const [assetUrls, setAssetUrls] = useState({});
   const [userAssets, setUserAssets] = useState([]);
+  const [templates, setTemplates] = useState([]);
   const [fontsList, setFontsList] = useState([]);
-  const [saveStatus, setSaveStatus] = useState("Saved"); // "Saved" | "Saving..." | "Unsaved"
-  const [scaleFactor, setScaleFactor] = useState(0.7);
+  const [saveStatus, setSaveStatus] = useState("All changes saved"); // "Saving..." | "All changes saved" | "Not saved, retry"
+  const [scaleFactor, setScaleFactor] = useState(1.0);
+
+  // Left Sidebar State
+  const [activeTab, setActiveTab] = useState("elements");
+  const [pendingTemplate, setPendingTemplate] = useState(null);
+  const [uploadingAsset, setUploadingAsset] = useState(false);
 
   // Export State
   const [exportFormat, setExportFormat] = useState("png");
@@ -57,17 +63,23 @@ export default function EditorPage() {
   const [exportJob, setExportJob] = useState(null);
   const [exporting, setExporting] = useState(false);
 
+  // Rename state
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
+
+  const workspaceRef = useRef(null);
   const autosaveTimerRef = useRef(null);
   const isInitialLoadedRef = useRef(false);
 
-  // 1. Initial Load: Project + Fresh Asset URLs + Font Catalog + My Assets
+  // 1. Initial Load: Project + Asset URLs + Fonts + Templates + User Assets
   useEffect(() => {
     async function loadData() {
       try {
-        const [projRes, fontsRes, assetsRes] = await Promise.all([
+        const [projRes, fontsRes, assetsRes, tplRes] = await Promise.all([
           apiFetch(`/api/projects/${projectId}`),
           apiFetch("/fonts/list"),
           apiFetch("/api/assets"),
+          apiFetch("/api/templates"),
         ]);
 
         if (projRes.status === 404) {
@@ -78,6 +90,7 @@ export default function EditorPage() {
         if (projRes.ok) {
           const data = await projRes.json();
           setProject(data);
+          setTitleInput(data.name || "Untitled design");
           dispatch({ type: "SET_CANVAS", payload: data.canvas });
           setAssetUrls(data.assetUrls || {});
           isInitialLoadedRef.current = true;
@@ -86,11 +99,17 @@ export default function EditorPage() {
         if (fontsRes.ok) {
           const fonts = await fontsRes.json();
           setFontsList(fonts);
+          loadAndRegisterFonts(fonts);
         }
 
         if (assetsRes.ok) {
           const assets = await assetsRes.json();
           setUserAssets(assets);
+        }
+
+        if (tplRes.ok) {
+          const tpls = await tplRes.json();
+          setTemplates(tpls);
         }
       } catch (err) {
         console.error("Failed to load editor data", err);
@@ -99,88 +118,115 @@ export default function EditorPage() {
     loadData();
   }, [projectId, router]);
 
-  // Save Project
-  const saveProject = useCallback(async (canvasToSave = canvas, nameToSave = project?.name) => {
-    if (!canvasToSave) return;
-    setSaveStatus("Saving...");
-    try {
-      const res = await apiFetch(`/api/projects/${projectId}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          name: nameToSave,
-          canvas: canvasToSave,
-        }),
-      });
+  // Zoom to fit helper
+  const handleZoomToFit = useCallback(() => {
+    if (!canvas || !workspaceRef.current) return;
+    const rect = workspaceRef.current.getBoundingClientRect();
+    const fitScale = computeZoomToFit(canvas.width, canvas.height, rect.width, rect.height, 48);
+    setScaleFactor(fitScale);
+  }, [canvas]);
 
-      if (res.ok) {
-        const updated = await res.json();
-        setProject(updated);
-        setAssetUrls(updated.assetUrls || {});
-        setSaveStatus("Saved");
-      } else {
-        setSaveStatus("Error saving");
-      }
-    } catch (err) {
-      console.error("Save failed", err);
-      setSaveStatus("Error saving");
+  // Open at "fit" on initial load
+  useEffect(() => {
+    if (isInitialLoadedRef.current && canvas) {
+      const timer = setTimeout(() => {
+        handleZoomToFit();
+      }, 100);
+      return () => clearTimeout(timer);
     }
-  }, [canvas, project?.name, projectId]);
+  }, [canvas, handleZoomToFit]);
+
+  // Ctrl/Cmd + wheel zoom on workspace
+  useEffect(() => {
+    const container = workspaceRef.current;
+    if (!container) return;
+
+    function handleWheel(e) {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        setScaleFactor((prev) => calculateWheelZoom(prev, e.deltaY));
+      }
+    }
+
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => container.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  // Save Project
+  const saveProject = useCallback(
+    async (canvasToSave = canvas, nameToSave = project?.name) => {
+      if (!canvasToSave) return;
+      setSaveStatus("Saving...");
+      try {
+        const res = await apiFetch(`/api/projects/${projectId}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            name: nameToSave,
+            canvas: canvasToSave,
+          }),
+        });
+
+        if (res.ok) {
+          const updated = await res.json();
+          setProject(updated);
+          setAssetUrls(updated.assetUrls || {});
+          setSaveStatus("All changes saved");
+        } else {
+          setSaveStatus("Not saved, retry");
+        }
+      } catch (err) {
+        console.error("Save failed", err);
+        setSaveStatus("Not saved, retry");
+      }
+    },
+    [canvas, project?.name, projectId]
+  );
 
   // Autosave after 3 seconds idle
-  const triggerAutosave = useCallback((newCanvas) => {
-    setSaveStatus("Unsaved");
-    if (autosaveTimerRef.current) {
-      clearTimeout(autosaveTimerRef.current);
-    }
-    autosaveTimerRef.current = setTimeout(() => {
-      saveProject(newCanvas, project?.name);
-    }, 3000);
-  }, [saveProject, project?.name]);
+  const triggerAutosave = useCallback(
+    (newCanvas) => {
+      setSaveStatus("Saving...");
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+      }
+      autosaveTimerRef.current = setTimeout(() => {
+        saveProject(newCanvas, project?.name);
+      }, 3000);
+    },
+    [saveProject, project?.name]
+  );
 
-  // Trigger autosave whenever canvas changes after initial load
+  // Trigger autosave when canvas updates
   useEffect(() => {
     if (!isInitialLoadedRef.current || !canvas) return;
     triggerAutosave(canvas);
   }, [canvas, triggerAutosave]);
 
-  const deleteSelectedElement = useCallback(() => {
-    if (!selectedId) return;
-    dispatch({ type: "DELETE_ELEMENT", payload: selectedId });
-  }, [selectedId]);
-
-  // Keyboard listener for Delete / Backspace
-  useEffect(() => {
-    function handleKeyDown(e) {
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-        if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
-          return;
-        }
-        e.preventDefault();
-        deleteSelectedElement();
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedId, deleteSelectedElement]);
-
-  // Element Mutation Helpers
-  function handleUpdateElement(updatedEl, coalesce = false) {
-    dispatch({ type: "UPDATE_ELEMENT", payload: updatedEl, coalesce });
+  // Handle title rename submit
+  async function handleTitleSave() {
+    setIsEditingTitle(false);
+    const newName = titleInput.trim() || "Untitled design";
+    setTitleInput(newName);
+    setProject((prev) => (prev ? { ...prev, name: newName } : prev));
+    await saveProject(canvas, newName);
   }
 
-  function addTextElement() {
+  // Element actions
+  function handleAddText(options = {}) {
     if (!canvas) return;
-    const { x, y } = computeCenterPosition(400, 100, canvas.width, canvas.height);
+    const width = options.width || 400;
+    const { x, y } = computeCenterPosition(width, 80, canvas.width, canvas.height);
     const newEl = createNewElement("text", {
+      ...options,
       x,
       y,
-      width: 400,
+      width,
       fontFamily: fontsList[0]?.family || "Roboto",
     });
     dispatch({ type: "ADD_ELEMENT", payload: newEl });
   }
 
-  function addShapeElement(shapeType) {
+  function handleAddShape(shapeType) {
     if (!canvas) return;
     const width = shapeType === "rect" ? 250 : 200;
     const height = shapeType === "rect" ? 180 : 200;
@@ -195,7 +241,7 @@ export default function EditorPage() {
     dispatch({ type: "ADD_ELEMENT", payload: newEl });
   }
 
-  function addImageElement(asset) {
+  function handleAddImage(asset) {
     if (!canvas) return;
     const width = Math.min(400, asset.width || 400);
     const height = Math.min(400, asset.height || 400);
@@ -234,24 +280,26 @@ export default function EditorPage() {
       y,
       width,
       height,
-      fontFamily: payload.type === "text" ? (fontsList[0]?.family || "Roboto") : undefined,
+      fontFamily: payload.type === "text" ? fontsList[0]?.family || "Roboto" : undefined,
     });
 
     dispatch({ type: "ADD_ELEMENT", payload: newEl });
   }
 
-  function moveSelectedLayer(direction) {
-    if (!selectedId) return;
-    dispatch({ type: "REORDER_ELEMENT", payload: { id: selectedId, direction } });
-  }
-
+  // Upload Asset
   async function handleAssetUpload(e) {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (file.size > 10 * 1024 * 1024) {
+      addToast("File is larger than 10MB limit", "error");
+      return;
+    }
+
     const formData = new FormData();
     formData.append("file", file);
 
+    setUploadingAsset(true);
     try {
       const res = await apiFetch("/api/assets", {
         method: "POST",
@@ -261,42 +309,49 @@ export default function EditorPage() {
       if (res.ok) {
         const newAsset = await res.json();
         setUserAssets((prev) => [newAsset, ...prev]);
-        addImageElement(newAsset);
+        handleAddImage(newAsset);
+        addToast("Image uploaded", "success");
+      } else {
+        addToast("Failed to upload image", "error");
       }
-    } catch (err) {
-      console.error("Asset upload failed", err);
+    } catch {
+      addToast("Upload error", "error");
+    } finally {
+      setUploadingAsset(false);
+      e.target.value = "";
     }
   }
 
-  // Layer Order Operations
-  function moveSelectedLayer(direction) {
-    if (!selectedId || !canvas) return;
-    const idx = canvas.elements.findIndex((el) => el.id === selectedId);
-    if (idx === -1) return;
-
-    const targetIdx = direction === "up" ? idx + 1 : idx - 1;
-    if (targetIdx < 0 || targetIdx >= canvas.elements.length) return;
-
-    const elementsCopy = [...canvas.elements];
-    const [moved] = elementsCopy.splice(idx, 1);
-    elementsCopy.splice(targetIdx, 0, moved);
-
-    const nextCanvas = { ...canvas, elements: elementsCopy };
-    setCanvas(nextCanvas);
-    triggerAutosave(nextCanvas);
+  // Delete Asset
+  async function handleDeleteAsset(assetId) {
+    try {
+      const res = await apiFetch(`/api/assets/${assetId}`, { method: "DELETE" });
+      if (res.ok) {
+        setUserAssets((prev) => prev.filter((a) => a.id !== assetId));
+        addToast("Asset removed", "info");
+      }
+    } catch {
+      addToast("Failed to delete asset", "error");
+    }
   }
 
-  // Export Flow (polling every 2s per SPEC Section 10)
+  // Confirm Apply Template
+  function handleConfirmApplyTemplate() {
+    if (!pendingTemplate) return;
+    dispatch({ type: "SET_CANVAS", payload: pendingTemplate.canvas });
+    setPendingTemplate(null);
+    addToast("Template applied", "success");
+  }
+
+  // Export Flow
   async function triggerExport() {
     setExporting(true);
     setExportJob(null);
     setExportModal(true);
 
     try {
-      // 1. Snapshot current canvas to project first
       await saveProject(canvas, project?.name);
 
-      // 2. Request Export
       const res = await apiFetch("/api/exports", {
         method: "POST",
         body: JSON.stringify({
@@ -306,37 +361,36 @@ export default function EditorPage() {
         }),
       });
 
-      if (!res.ok) throw new Error("Failed to queue export");
+      if (!res.ok) throw new Error("Failed to queue export job");
 
       const job = await res.json();
       setExportJob(job);
 
-      // 3. Poll every 2 seconds
       const pollInterval = setInterval(async () => {
         try {
           const pollRes = await apiFetch(`/api/exports/${job.id}`);
           if (pollRes.ok) {
-            const updatedJob = await pollRes.json();
-            setExportJob(updatedJob);
-            if (updatedJob.status === "done" || updatedJob.status === "failed") {
+            const updated = await pollRes.json();
+            setExportJob(updated);
+            if (updated.status === "done" || updated.status === "failed") {
               clearInterval(pollInterval);
               setExporting(false);
             }
           }
-        } catch (pollErr) {
-          console.error("Polling error", pollErr);
+        } catch {
+          // Keep polling
         }
       }, 2000);
-    } catch (err) {
-      console.error("Export error", err);
+    } catch {
       setExporting(false);
+      addToast("Export failed", "error");
     }
   }
 
   if (!project || !canvas) {
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-950">
-        <Loader2 className="animate-spin text-indigo-500" size={32} />
+      <div className="flex h-screen items-center justify-center bg-page">
+        <Loader2 className="animate-spin text-accent" size={28} strokeWidth={1.75} />
       </div>
     );
   }
@@ -344,728 +398,325 @@ export default function EditorPage() {
   const selectedElement = canvas.elements.find((el) => el.id === selectedId);
 
   return (
-    <div className="flex h-screen flex-col bg-slate-950 text-slate-100 select-none overflow-hidden">
-      {/* Top Header Bar */}
-      <header className="h-14 border-b border-slate-800 bg-slate-900 px-4 flex items-center justify-between z-20">
-        <div className="flex items-center space-x-3">
+    <div className="flex h-screen flex-col bg-white text-text select-none overflow-hidden font-sans">
+      {/* 1. Top Header Bar */}
+      <header className="h-14 border-b border-border bg-white px-4 flex items-center justify-between z-20 flex-shrink-0">
+        <div className="flex items-center space-x-3 min-w-0">
           <Link
             href="/projects"
-            className="flex items-center space-x-1 rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white transition"
+            className="p-1.5 rounded text-text-muted hover:text-text hover:bg-slate-100 transition"
+            title="Back to projects"
           >
-            <ArrowLeft size={18} />
+            <ArrowLeft size={18} strokeWidth={1.75} />
           </Link>
-          <input
-            type="text"
-            value={project.name}
-            onChange={(e) => {
-              const newName = e.target.value;
-              setProject((p) => ({ ...p, name: newName }));
-              triggerAutosave(canvas);
-            }}
-            className="bg-transparent font-semibold text-white text-sm hover:bg-slate-800/60 px-2 py-1 rounded focus:bg-slate-800 focus:outline-none"
-          />
-          <div className="flex items-center space-x-1.5 text-xs text-slate-400">
-            <span>•</span>
-            <span className={saveStatus === "Saved" ? "text-slate-400" : "text-amber-400"}>
-              {saveStatus}
-            </span>
+
+          {/* Design Name (click to rename) */}
+          <div className="flex items-center min-w-0">
+            {isEditingTitle ? (
+              <input
+                type="text"
+                autoFocus
+                value={titleInput}
+                onChange={(e) => setTitleInput(e.target.value)}
+                onBlur={handleTitleSave}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleTitleSave();
+                  if (e.key === "Escape") {
+                    setTitleInput(project.name || "Untitled design");
+                    setIsEditingTitle(false);
+                  }
+                }}
+                className="rounded border border-accent bg-white px-2 py-0.5 text-sm font-semibold text-text focus:outline-none"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsEditingTitle(true)}
+                className="text-sm font-semibold text-text hover:bg-slate-100 px-2 py-1 rounded transition truncate max-w-[220px]"
+                title="Click to rename design"
+              >
+                {project.name || "Untitled design"}
+              </button>
+            )}
           </div>
 
-          <div className="flex items-center space-x-1 pl-2 border-l border-slate-800">
+          {/* Save Status */}
+          <div className="flex items-center space-x-1.5 text-xs text-text-muted pl-2 border-l border-border">
+            {saveStatus === "Saving..." && (
+              <>
+                <Loader2 size={12} strokeWidth={1.75} className="animate-spin text-accent" />
+                <span>Saving...</span>
+              </>
+            )}
+            {saveStatus === "All changes saved" && (
+              <>
+                <CheckCircle2 size={12} strokeWidth={1.75} className="text-green-600" />
+                <span className="text-text-muted">All changes saved</span>
+              </>
+            )}
+            {saveStatus === "Not saved, retry" && (
+              <button
+                type="button"
+                onClick={() => saveProject(canvas, project.name)}
+                className="flex items-center space-x-1 text-danger hover:underline font-medium"
+              >
+                <AlertCircle size={12} strokeWidth={1.75} />
+                <span>Not saved, retry</span>
+              </button>
+            )}
+          </div>
+
+          {/* Undo / Redo */}
+          <div className="flex items-center space-x-0.5 pl-2 border-l border-border">
             <button
+              type="button"
               onClick={() => dispatch({ type: "UNDO" })}
               disabled={history.past.length === 0}
-              className="p-1.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition"
+              className="p-1.5 rounded text-text-muted hover:text-text hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition"
               title="Undo (Ctrl/Cmd+Z)"
             >
-              <Undo2 size={16} />
+              <Undo2 size={16} strokeWidth={1.75} />
             </button>
             <button
+              type="button"
               onClick={() => dispatch({ type: "REDO" })}
               disabled={history.future.length === 0}
-              className="p-1.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition"
+              className="p-1.5 rounded text-text-muted hover:text-text hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition"
               title="Redo (Ctrl/Cmd+Y / Shift+Z)"
             >
-              <Redo2 size={16} />
+              <Redo2 size={16} strokeWidth={1.75} />
             </button>
           </div>
         </div>
 
-        {/* Top Right Controls */}
+        {/* Top Right: Export button */}
         <div className="flex items-center space-x-3">
-          {/* Zoom controls */}
-          <div className="flex items-center space-x-1 text-xs text-slate-400 bg-slate-800 px-2 py-1 rounded-lg">
-            <span>Zoom:</span>
-            <button
-              onClick={() => setScaleFactor((s) => Math.max(0.2, s - 0.1))}
-              className="px-1.5 hover:text-white"
-            >
-              -
-            </button>
-            <span className="font-mono">{Math.round(scaleFactor * 100)}%</span>
-            <button
-              onClick={() => setScaleFactor((s) => Math.min(2.0, s + 0.1))}
-              className="px-1.5 hover:text-white"
-            >
-              +
-            </button>
-          </div>
-
-          <button
-            onClick={() => saveProject(canvas, project.name)}
-            className="flex items-center space-x-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white transition"
-          >
-            <Save size={14} />
-            <span>Save</span>
-          </button>
-
-          <button
-            onClick={triggerExport}
-            className="flex items-center space-x-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3.5 py-1.5 text-xs font-semibold text-white shadow-md shadow-indigo-600/30 transition"
-          >
-            <Download size={14} />
+          <Button variant="primary" size="sm" onClick={() => setExportModal(true)}>
+            <Download size={14} strokeWidth={1.75} className="mr-1.5" />
             <span>Export</span>
-          </button>
+          </Button>
         </div>
       </header>
 
-      {/* Main Workspace Area */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left Toolbar */}
-        <aside className="w-64 border-r border-slate-800 bg-slate-900 flex flex-col p-4 overflow-y-auto">
-          <div className="mb-6">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Add Elements</h2>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                onClick={addTextElement}
-                draggable="true"
-                onDragStart={(e) => {
-                  e.dataTransfer.setData(
-                    "application/pixelforge-element",
-                    JSON.stringify({ type: "text", text: "Heading Text", width: 400 })
-                  );
-                  e.dataTransfer.effectAllowed = "copy";
-                }}
-                className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 hover:border-slate-700 transition cursor-grab active:cursor-grabbing"
-              >
-                <Type size={20} className="text-indigo-400 mb-1" />
-                <span className="text-[11px] font-medium">Text</span>
-              </button>
+      {/* 2. Main Editor Body */}
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Left Icon Rail + 300px Panel */}
+        <EditorSidebar
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          templates={templates}
+          userAssets={userAssets}
+          canvas={canvas}
+          selectedId={selectedId}
+          onSelectElement={(id) => dispatch({ type: "SELECT_ELEMENT", payload: id })}
+          onAddText={handleAddText}
+          onAddShape={handleAddShape}
+          onAddImage={handleAddImage}
+          onApplyTemplate={(tpl) => setPendingTemplate(tpl)}
+          onUploadAsset={handleAssetUpload}
+          onDeleteAsset={handleDeleteAsset}
+          onReorderElement={(direction, id) =>
+            dispatch({
+              type: "REORDER_ELEMENT",
+              payload: { id: id || selectedId, direction },
+            })
+          }
+          onDeleteElement={(id) => dispatch({ type: "DELETE_ELEMENT", payload: id })}
+          uploadingAsset={uploadingAsset}
+        />
 
-              <button
-                onClick={() => addShapeElement("rect")}
-                draggable="true"
-                onDragStart={(e) => {
-                  e.dataTransfer.setData(
-                    "application/pixelforge-element",
-                    JSON.stringify({ type: "shape", shape: "rect", width: 250, height: 180 })
-                  );
-                  e.dataTransfer.effectAllowed = "copy";
-                }}
-                className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 hover:border-slate-700 transition cursor-grab active:cursor-grabbing"
-              >
-                <Square size={20} className="text-indigo-400 mb-1" />
-                <span className="text-[11px] font-medium">Rectangle</span>
-              </button>
-
-              <button
-                onClick={() => addShapeElement("ellipse")}
-                draggable="true"
-                onDragStart={(e) => {
-                  e.dataTransfer.setData(
-                    "application/pixelforge-element",
-                    JSON.stringify({ type: "shape", shape: "ellipse", width: 200, height: 200 })
-                  );
-                  e.dataTransfer.effectAllowed = "copy";
-                }}
-                className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 hover:border-slate-700 transition cursor-grab active:cursor-grabbing"
-              >
-                <Circle size={20} className="text-indigo-400 mb-1" />
-                <span className="text-[11px] font-medium">Ellipse</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Layer Ordering (when element selected) */}
-          {selectedElement && (
-            <div className="mb-6">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center justify-between">
-                <span>Layer Order</span>
-                <span className="text-[10px] text-slate-500">Z-Index</span>
-              </h2>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => moveSelectedLayer("up")}
-                  className="flex items-center justify-center space-x-1.5 p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white transition"
-                >
-                  <ChevronUp size={14} />
-                  <span>Bring Up</span>
-                </button>
-                <button
-                  onClick={() => moveSelectedLayer("down")}
-                  className="flex items-center justify-center space-x-1.5 p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white transition"
-                >
-                  <ChevronDown size={14} />
-                  <span>Send Down</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* My Assets Section */}
-          <div className="flex-1 flex flex-col">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">My Assets</h2>
-              <label className="cursor-pointer text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center space-x-1">
-                <Upload size={12} />
-                <span>Upload</span>
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={handleAssetUpload}
-                  className="hidden"
-                />
-              </label>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 overflow-y-auto max-h-64 pr-1">
-              {userAssets.map((asset) => (
-                <div
-                  key={asset.id}
-                  onClick={() => addImageElement(asset)}
-                  draggable="true"
-                  onDragStart={(e) => {
-                    e.dataTransfer.setData(
-                      "application/pixelforge-element",
-                      JSON.stringify({
-                        type: "image",
-                        assetId: asset.id,
-                        assetUrl: asset.url,
-                        width: Math.min(400, asset.width || 400),
-                        height: Math.min(400, asset.height || 400),
-                      })
-                    );
-                    e.dataTransfer.effectAllowed = "copy";
-                  }}
-                  className="group relative cursor-grab active:cursor-grabbing aspect-square rounded-lg border border-slate-800 bg-slate-850 overflow-hidden hover:border-indigo-500 transition flex items-center justify-center p-1"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={asset.url}
-                    alt={asset.filename}
-                    className="max-h-full max-w-full object-contain pointer-events-none"
-                  />
-                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition pointer-events-none">
-                    <span className="text-[10px] text-white font-semibold">Add</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
-
-        {/* Center Canvas Viewport */}
-        <section className="flex-1 bg-slate-950 overflow-auto relative">
-          <EditorCanvas
+        {/* Center Workspace + Contextual Toolbar */}
+        <div className="flex-1 flex flex-col min-w-0 bg-[#E9EDF2] overflow-hidden relative">
+          {/* Contextual Toolbar above artboard */}
+          <ContextualToolbar
+            selectedElement={selectedElement}
             canvas={canvas}
-            assetUrls={assetUrls}
-            selectedId={selectedId}
-            onSelectElement={(id) => dispatch({ type: "SELECT_ELEMENT", payload: id })}
-            onUpdateElement={handleUpdateElement}
-            onDropElement={handleDropElement}
-            stageScale={scaleFactor}
+            fontsList={fontsList}
+            onUpdateElement={(updated, coalesce) =>
+              dispatch({ type: "UPDATE_ELEMENT", payload: updated, coalesce })
+            }
+            onDuplicateElement={() => dispatch({ type: "DUPLICATE_ELEMENT" })}
+            onDeleteElement={() => dispatch({ type: "DELETE_ELEMENT" })}
+            onReorderElement={(direction) =>
+              dispatch({ type: "REORDER_ELEMENT", payload: { id: selectedId, direction } })
+            }
+            onSetBackground={(color) =>
+              dispatch({ type: "SET_CANVAS_BACKGROUND", payload: color })
+            }
           />
-        </section>
 
-        {/* Right Properties Panel */}
-        <aside className="w-72 border-l border-slate-800 bg-slate-900 p-4 overflow-y-auto">
-          {selectedElement ? (
-            <div>
-              <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
-                <h2 className="text-xs font-bold uppercase tracking-wider text-white">
-                  {selectedElement.type} Properties
-                </h2>
-                <button
-                  onClick={deleteSelectedElement}
-                  title="Delete element"
-                  className="p-1.5 rounded text-slate-400 hover:text-red-400 hover:bg-slate-800 transition"
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
+          {/* Centered Workspace Artboard */}
+          <div ref={workspaceRef} className="flex-1 overflow-auto relative">
+            <EditorCanvas
+              canvas={canvas}
+              assetUrls={assetUrls}
+              selectedId={selectedId}
+              onSelectElement={(id) => dispatch({ type: "SELECT_ELEMENT", payload: id })}
+              onUpdateElement={(updated) => dispatch({ type: "UPDATE_ELEMENT", payload: updated })}
+              onDropElement={handleDropElement}
+              stageScale={scaleFactor}
+            />
 
-              {/* Transform Position & Dimensions */}
-              <div className="space-y-4 text-xs">
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-slate-400 block mb-1">X Position</label>
-                    <input
-                      type="number"
-                      value={selectedElement.x}
-                      onChange={(e) =>
-                        handleUpdateElement({ ...selectedElement, x: parseInt(e.target.value, 10) || 0 })
-                      }
-                      className="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-slate-400 block mb-1">Y Position</label>
-                    <input
-                      type="number"
-                      value={selectedElement.y}
-                      onChange={(e) =>
-                        handleUpdateElement({ ...selectedElement, y: parseInt(e.target.value, 10) || 0 })
-                      }
-                      className="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-white"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-slate-400 block mb-1">Width</label>
-                    <input
-                      type="number"
-                      min={5}
-                      value={selectedElement.width}
-                      onChange={(e) =>
-                        handleUpdateElement({ ...selectedElement, width: parseInt(e.target.value, 10) || 10 })
-                      }
-                      className="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-white"
-                    />
-                  </div>
-                  {selectedElement.type !== "text" && (
-                    <div>
-                      <label className="text-slate-400 block mb-1">Height</label>
-                      <input
-                        type="number"
-                        min={5}
-                        value={selectedElement.height || 100}
-                        onChange={(e) =>
-                          handleUpdateElement({ ...selectedElement, height: parseInt(e.target.value, 10) || 10 })
-                        }
-                        className="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-white"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {/* Rotation & Opacity */}
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-slate-400 block mb-1">Rotation (°)</label>
-                    <input
-                      type="number"
-                      value={selectedElement.rotation || 0}
-                      onChange={(e) =>
-                        handleUpdateElement({ ...selectedElement, rotation: parseInt(e.target.value, 10) || 0 })
-                      }
-                      className="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-slate-400 block mb-1">Opacity</label>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={selectedElement.opacity !== undefined ? selectedElement.opacity : 1.0}
-                      onChange={(e) =>
-                        handleUpdateElement({ ...selectedElement, opacity: parseFloat(e.target.value) })
-                      }
-                      className="w-full accent-indigo-500 mt-2"
-                    />
-                  </div>
-                </div>
-
-                {/* Text Specific Controls */}
-                {selectedElement.type === "text" && (
-                  <div className="space-y-3 pt-3 border-t border-slate-800">
-                    <div>
-                      <label className="text-slate-400 block mb-1">Text Content</label>
-                      <textarea
-                        rows={2}
-                        value={selectedElement.text || ""}
-                        onChange={(e) => handleUpdateElement({ ...selectedElement, text: e.target.value })}
-                        className="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-white"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-slate-400 block mb-1">Font Family</label>
-                      <select
-                        value={selectedElement.fontFamily || "Roboto"}
-                        onChange={(e) =>
-                          handleUpdateElement({ ...selectedElement, fontFamily: e.target.value })
-                        }
-                        className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white"
-                      >
-                        {fontsList.map((f) => (
-                          <option key={f.family} value={f.family}>
-                            {f.family}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-slate-400 block mb-1">Font Size</label>
-                        <input
-                          type="number"
-                          min={8}
-                          max={200}
-                          value={selectedElement.fontSize || 24}
-                          onChange={(e) =>
-                            handleUpdateElement({ ...selectedElement, fontSize: parseInt(e.target.value, 10) || 12 })
-                          }
-                          className="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-white"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-slate-400 block mb-1">Weight</label>
-                        <select
-                          value={selectedElement.fontWeight || 400}
-                          onChange={(e) =>
-                            handleUpdateElement({
-                              ...selectedElement,
-                              fontWeight: parseInt(e.target.value, 10),
-                            })
-                          }
-                          className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white"
-                        >
-                          <option value={400}>Regular (400)</option>
-                          <option value={700}>Bold (700)</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-slate-400 block mb-1">Text Color</label>
-                        <div className="flex items-center space-x-2">
-                          <input
-                            type="color"
-                            value={selectedElement.fill || "#000000"}
-                            onChange={(e) => handleUpdateElement({ ...selectedElement, fill: e.target.value })}
-                            className="h-7 w-7 rounded border border-slate-700 bg-transparent cursor-pointer"
-                          />
-                          <span className="text-[11px] font-mono">{selectedElement.fill || "#000000"}</span>
-                        </div>
-                      </div>
-                      <div>
-                        <label className="text-slate-400 block mb-1">Alignment</label>
-                        <select
-                          value={selectedElement.align || "left"}
-                          onChange={(e) => handleUpdateElement({ ...selectedElement, align: e.target.value })}
-                          className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white"
-                        >
-                          <option value="left">Left</option>
-                          <option value="center">Center</option>
-                          <option value="right">Right</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Shape Specific Controls */}
-                {selectedElement.type === "shape" && (
-                  <div className="space-y-3 pt-3 border-t border-slate-800">
-                    <div>
-                      <label className="text-slate-400 block mb-1">Fill Color</label>
-                      <div className="flex items-center space-x-2">
-                        <input
-                          type="color"
-                          value={selectedElement.fill || "#6366F1"}
-                          onChange={(e) => handleUpdateElement({ ...selectedElement, fill: e.target.value })}
-                          className="h-7 w-7 rounded border border-slate-700 bg-transparent cursor-pointer"
-                        />
-                        <span className="text-[11px] font-mono">{selectedElement.fill || "#6366F1"}</span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-slate-400 block mb-1">Stroke Color</label>
-                        <input
-                          type="color"
-                          value={selectedElement.stroke || "#000000"}
-                          onChange={(e) => handleUpdateElement({ ...selectedElement, stroke: e.target.value })}
-                          className="h-7 w-7 rounded border border-slate-700 bg-transparent cursor-pointer"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-slate-400 block mb-1">Stroke Width</label>
-                        <input
-                          type="number"
-                          min={0}
-                          max={50}
-                          value={selectedElement.strokeWidth || 0}
-                          onChange={(e) =>
-                            handleUpdateElement({ ...selectedElement, strokeWidth: parseInt(e.target.value, 10) || 0 })
-                          }
-                          className="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-white"
-                        />
-                      </div>
-                    </div>
-
-                    {selectedElement.shape === "rect" && (
-                      <div>
-                        <label className="text-slate-400 block mb-1">Corner Radius</label>
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          value={selectedElement.cornerRadius || 0}
-                          onChange={(e) =>
-                            handleUpdateElement({ ...selectedElement, cornerRadius: parseInt(e.target.value, 10) || 0 })
-                          }
-                          className="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-white"
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Image Specific Controls */}
-                {selectedElement.type === "image" && (
-                  <div className="space-y-3 pt-3 border-t border-slate-800">
-                    <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Image Filters</h3>
-                    <div>
-                      <label className="text-slate-400 block mb-1">
-                        Brightness ({selectedElement.filters?.brightness || 0})
-                      </label>
-                      <input
-                        type="range"
-                        min={-1}
-                        max={1}
-                        step={0.1}
-                        value={selectedElement.filters?.brightness || 0}
-                        onChange={(e) =>
-                          handleUpdateElement({
-                            ...selectedElement,
-                            filters: { ...selectedElement.filters, brightness: parseFloat(e.target.value) },
-                          })
-                        }
-                        className="w-full accent-indigo-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-1">
-                        Contrast ({selectedElement.filters?.contrast || 0})
-                      </label>
-                      <input
-                        type="range"
-                        min={-1}
-                        max={1}
-                        step={0.1}
-                        value={selectedElement.filters?.contrast || 0}
-                        onChange={(e) =>
-                          handleUpdateElement({
-                            ...selectedElement,
-                            filters: { ...selectedElement.filters, contrast: parseFloat(e.target.value) },
-                          })
-                        }
-                        className="w-full accent-indigo-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-1">
-                        Saturation ({selectedElement.filters?.saturation || 0})
-                      </label>
-                      <input
-                        type="range"
-                        min={-1}
-                        max={1}
-                        step={0.1}
-                        value={selectedElement.filters?.saturation || 0}
-                        onChange={(e) =>
-                          handleUpdateElement({
-                            ...selectedElement,
-                            filters: { ...selectedElement.filters, saturation: parseFloat(e.target.value) },
-                          })
-                        }
-                        className="w-full accent-indigo-500"
-                      />
-                    </div>
-                    <label className="flex items-center space-x-2 cursor-pointer mt-2">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(selectedElement.filters?.grayscale)}
-                        onChange={(e) =>
-                          handleUpdateElement({
-                            ...selectedElement,
-                            filters: { ...selectedElement.filters, grayscale: e.target.checked },
-                          })
-                        }
-                        className="rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-0"
-                      />
-                      <span className="text-slate-300">Grayscale</span>
-                    </label>
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            /* Canvas Background & Global Settings */
-            <div>
-              <h2 className="text-xs font-bold uppercase tracking-wider text-white mb-4 pb-2 border-b border-slate-800">
-                Canvas Settings
-              </h2>
-              <div className="space-y-4 text-xs">
-                <div>
-                  <label className="text-slate-400 block mb-1">Canvas Background</label>
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="color"
-                      value={canvas.background || "#FFFFFF"}
-                      onChange={(e) => {
-                        dispatch({ type: "SET_CANVAS_BACKGROUND", payload: e.target.value });
-                      }}
-                      className="h-7 w-7 rounded border border-slate-700 bg-transparent cursor-pointer"
-                    />
-                    <span className="text-[11px] font-mono">{canvas.background}</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-slate-400 block mb-1">Width (px)</label>
-                    <input
-                      type="number"
-                      readOnly
-                      value={canvas.width}
-                      className="w-full bg-slate-800/50 border border-slate-800 rounded px-2.5 py-1 text-slate-400 cursor-not-allowed"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-slate-400 block mb-1">Height (px)</label>
-                    <input
-                      type="number"
-                      readOnly
-                      value={canvas.height}
-                      className="w-full bg-slate-800/50 border border-slate-800 rounded px-2.5 py-1 text-slate-400 cursor-not-allowed"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </aside>
-      </div>
-
-      {/* Export Modal / Status Popup */}
-      {exportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl">
-            <h2 className="text-lg font-bold text-white mb-4 flex items-center justify-between">
-              <span>Export Design</span>
-              <button
-                onClick={() => setExportModal(false)}
-                className="text-slate-400 hover:text-white text-sm"
-              >
-                ✕
-              </button>
-            </h2>
-
-            <div className="space-y-4 mb-6 text-sm">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Format</label>
-                  <select
-                    value={exportFormat}
-                    onChange={(e) => setExportFormat(e.target.value)}
-                    disabled={exporting}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-white text-sm"
-                  >
-                    <option value="png">PNG (Lossless)</option>
-                    <option value="jpeg">JPEG (Photo)</option>
-                    <option value="pdf">PDF (Document)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Scale</label>
-                  <select
-                    value={exportScale}
-                    onChange={(e) => setExportScale(parseInt(e.target.value, 10))}
-                    disabled={exporting}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-white text-sm"
-                  >
-                    <option value={1}>1x ({canvas.width} × {canvas.height})</option>
-                    <option value={2}>2x ({canvas.width * 2} × {canvas.height * 2})</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Status Display */}
-              {exportJob && (
-                <div className="rounded-xl bg-slate-850 border border-slate-800 p-4">
-                  <div className="flex items-center justify-between text-xs mb-2">
-                    <span className="text-slate-400">Job Status</span>
-                    <span className={`font-semibold uppercase tracking-wider ${
-                      exportJob.status === "done"
-                        ? "text-green-400"
-                        : exportJob.status === "failed"
-                        ? "text-red-400"
-                        : "text-amber-400"
-                    }`}>
-                      {exportJob.status}
-                    </span>
-                  </div>
-
-                  {exportJob.status === "processing" && (
-                    <div className="flex items-center space-x-2 text-xs text-slate-400">
-                      <Loader2 className="animate-spin text-indigo-400" size={14} />
-                      <span>Pillow rendering in progress...</span>
-                    </div>
-                  )}
-
-                  {exportJob.status === "done" && exportJob.downloadUrl && (
-                    <a
-                      href={exportJob.downloadUrl}
-                      download={`export.${exportFormat}`}
-                      className="mt-3 flex items-center justify-center space-x-2 w-full rounded-lg bg-green-600 hover:bg-green-500 py-2 font-semibold text-white transition text-xs shadow-lg shadow-green-600/20"
-                    >
-                      <Download size={14} />
-                      <span>Download {exportFormat.toUpperCase()}</span>
-                    </a>
-                  )}
-
-                  {exportJob.status === "failed" && (
-                    <p className="mt-2 text-xs text-red-400">
-                      {exportJob.error || "Rendering failed"}
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-end space-x-2">
+            {/* Bottom Right Zoom Controls */}
+            <div className="absolute bottom-4 right-4 z-20 flex items-center space-x-1 rounded border border-border bg-white px-2 py-1 shadow-sm text-xs font-medium text-text select-none">
               <button
                 type="button"
-                onClick={() => setExportModal(false)}
-                className="rounded-lg px-4 py-2 text-xs text-slate-400 hover:text-white transition"
+                onClick={() => setScaleFactor((prev) => stepZoom(prev, "out"))}
+                className="p-1 rounded text-text-muted hover:text-text hover:bg-slate-100 transition"
+                title="Zoom out"
+                aria-label="Zoom out"
               >
-                Close
+                <Minus size={13} strokeWidth={1.75} />
               </button>
-              {(!exportJob || exportJob.status !== "done") && (
-                <button
-                  type="button"
-                  onClick={triggerExport}
-                  disabled={exporting}
-                  className="rounded-lg bg-indigo-600 hover:bg-indigo-500 px-4 py-2 text-xs font-semibold text-white shadow-md shadow-indigo-600/30 transition disabled:opacity-50 flex items-center space-x-1.5"
-                >
-                  {exporting && <Loader2 className="animate-spin" size={12} />}
-                  <span>{exporting ? "Rendering..." : "Generate Export"}</span>
-                </button>
-              )}
+
+              <span className="font-mono text-xs w-12 text-center">
+                {Math.round(scaleFactor * 100)}%
+              </span>
+
+              <button
+                type="button"
+                onClick={() => setScaleFactor((prev) => stepZoom(prev, "in"))}
+                className="p-1 rounded text-text-muted hover:text-text hover:bg-slate-100 transition"
+                title="Zoom in"
+                aria-label="Zoom in"
+              >
+                <Plus size={13} strokeWidth={1.75} />
+              </button>
+
+              <div className="h-3 w-px bg-border mx-1" />
+
+              <button
+                type="button"
+                onClick={handleZoomToFit}
+                className="px-1.5 py-0.5 rounded text-[11px] text-text-muted hover:text-text hover:bg-slate-100 transition flex items-center space-x-1"
+                title="Fit artboard to screen"
+              >
+                <Maximize2 size={11} strokeWidth={1.75} />
+                <span>Fit</span>
+              </button>
             </div>
           </div>
         </div>
-      )}
+      </div>
+
+      {/* Confirm Template Apply Modal */}
+      <Modal
+        isOpen={Boolean(pendingTemplate)}
+        onClose={() => setPendingTemplate(null)}
+        title="Apply template"
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setPendingTemplate(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" onClick={handleConfirmApplyTemplate}>
+              Apply template
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-text">
+          Applying this template will replace your current artboard. Unsaved changes to this design
+          will be overwritten.
+        </p>
+      </Modal>
+
+      {/* Export Modal */}
+      <Modal
+        isOpen={exportModal}
+        onClose={() => setExportModal(false)}
+        title="Export design"
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setExportModal(false)}>
+              Close
+            </Button>
+            {(!exportJob || exportJob.status !== "done") && (
+              <Button
+                variant="primary"
+                size="sm"
+                loading={exporting}
+                onClick={triggerExport}
+              >
+                Generate export
+              </Button>
+            )}
+          </>
+        }
+      >
+        <div className="space-y-4 text-xs">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-text mb-1">Format</label>
+              <select
+                value={exportFormat}
+                onChange={(e) => setExportFormat(e.target.value)}
+                disabled={exporting}
+                className="w-full rounded border border-border bg-white px-2.5 py-1.5 text-xs text-text focus:outline-none focus:border-accent"
+              >
+                <option value="png">PNG (lossless)</option>
+                <option value="jpeg">JPEG (photo)</option>
+                <option value="pdf">PDF (document)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-text mb-1">Scale</label>
+              <select
+                value={exportScale}
+                onChange={(e) => setExportScale(parseInt(e.target.value, 10))}
+                disabled={exporting}
+                className="w-full rounded border border-border bg-white px-2.5 py-1.5 text-xs text-text focus:outline-none focus:border-accent"
+              >
+                <option value={1}>1× ({canvas.width} × {canvas.height})</option>
+                <option value={2}>2× ({canvas.width * 2} × {canvas.height * 2})</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Job Status Banner */}
+          {exportJob && (
+            <div className="rounded border border-border bg-slate-50 p-3.5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-text-muted">Status:</span>
+                <span
+                  className={`font-semibold uppercase tracking-wider ${
+                    exportJob.status === "done"
+                      ? "text-green-600"
+                      : exportJob.status === "failed"
+                      ? "text-danger"
+                      : "text-amber-600"
+                  }`}
+                >
+                  {exportJob.status}
+                </span>
+              </div>
+
+              {exportJob.status === "processing" && (
+                <div className="flex items-center space-x-2 text-text-muted">
+                  <Loader2 size={13} strokeWidth={1.75} className="animate-spin text-accent" />
+                  <span>Rendering image...</span>
+                </div>
+              )}
+
+              {exportJob.status === "done" && exportJob.downloadUrl && (
+                <a
+                  href={exportJob.downloadUrl}
+                  download={`export.${exportFormat}`}
+                  className="mt-2 flex items-center justify-center space-x-1.5 w-full rounded bg-accent hover:bg-accent-hover py-2 font-medium text-white transition text-xs shadow-sm"
+                >
+                  <Download size={14} strokeWidth={1.75} />
+                  <span>Download {exportFormat.toUpperCase()}</span>
+                </a>
+              )}
+
+              {exportJob.status === "failed" && (
+                <p className="text-xs text-danger">{exportJob.error || "Rendering failed"}</p>
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }
