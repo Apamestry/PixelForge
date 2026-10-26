@@ -230,6 +230,7 @@ export default function EditorCanvas({
   selectedId,
   onSelectElement,
   onUpdateElement,
+  onDropElement,
   stageScale = 1.0,
 }) {
   const stageRef = useRef();
@@ -266,6 +267,26 @@ export default function EditorCanvas({
         style={{
           width: width * stageScale,
           height: height * stageScale,
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const raw = e.dataTransfer.getData("application/pixelforge-element");
+          if (!raw) return;
+          try {
+            const payload = JSON.parse(raw);
+            const stage = stageRef.current;
+            if (stage && onDropElement) {
+              stage.setPointersPositions(e);
+              const pointer = stage.getPointerPosition();
+              onDropElement(payload, pointer);
+            }
+          } catch (err) {
+            console.error("Failed to parse drop payload", err);
+          }
         }}
       >
         <Stage

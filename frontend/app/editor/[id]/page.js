@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
+import { computeDropPosition, computeCenterPosition, createNewElement } from "@/lib/dropPosition";
 import {
   ArrowLeft,
   Save,
@@ -92,23 +93,7 @@ export default function EditorPage() {
     loadData();
   }, [projectId, router]);
 
-  // 2. Keyboard listener for Delete / Backspace
-  useEffect(() => {
-    function handleKeyDown(e) {
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-        // Only if not typing in an input or textarea
-        if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
-          return;
-        }
-        e.preventDefault();
-        deleteSelectedElement();
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedId, canvas]);
-
-  // 3. Save Project
+  // Save Project
   const saveProject = useCallback(async (canvasToSave = canvas, nameToSave = project?.name) => {
     if (!canvasToSave) return;
     setSaveStatus("Saving...");
@@ -135,8 +120,8 @@ export default function EditorPage() {
     }
   }, [canvas, project, projectId]);
 
-  // 4. Autosave after 3 seconds idle
-  function triggerAutosave(newCanvas) {
+  // Autosave after 3 seconds idle
+  const triggerAutosave = useCallback((newCanvas) => {
     setSaveStatus("Unsaved");
     if (autosaveTimerRef.current) {
       clearTimeout(autosaveTimerRef.current);
@@ -144,83 +129,145 @@ export default function EditorPage() {
     autosaveTimerRef.current = setTimeout(() => {
       saveProject(newCanvas, project?.name);
     }, 3000);
-  }
+  }, [saveProject, project?.name]);
+
+  const deleteSelectedElement = useCallback(() => {
+    if (!selectedId) return;
+    setCanvas((prev) => {
+      if (!prev) return prev;
+      const nextCanvas = {
+        ...prev,
+        elements: prev.elements.filter((el) => el.id !== selectedId),
+      };
+      triggerAutosave(nextCanvas);
+      return nextCanvas;
+    });
+    setSelectedId(null);
+  }, [selectedId, triggerAutosave]);
+
+  // Keyboard listener for Delete / Backspace
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+        // Only if not typing in an input or textarea
+        if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
+          return;
+        }
+        e.preventDefault();
+        deleteSelectedElement();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedId, deleteSelectedElement]);
 
   // Element Mutation Helpers
   function handleUpdateElement(updatedEl) {
-    if (!canvas) return;
-    const nextElements = canvas.elements.map((el) => (el.id === updatedEl.id ? updatedEl : el));
-    const nextCanvas = { ...canvas, elements: nextElements };
-    setCanvas(nextCanvas);
-    triggerAutosave(nextCanvas);
+    setCanvas((prevCanvas) => {
+      if (!prevCanvas) return prevCanvas;
+      const nextElements = prevCanvas.elements.map((el) =>
+        el.id === updatedEl.id ? { ...el, ...updatedEl } : el
+      );
+      const nextCanvas = { ...prevCanvas, elements: nextElements };
+      triggerAutosave(nextCanvas);
+      return nextCanvas;
+    });
   }
 
   function addTextElement() {
     if (!canvas) return;
-    const newEl = {
-      id: "text_" + Math.random().toString(36).substr(2, 9),
-      type: "text",
-      text: "Heading Text",
-      x: Math.round(canvas.width / 4),
-      y: Math.round(canvas.height / 3),
+    const { x, y } = computeCenterPosition(400, 100, canvas.width, canvas.height);
+    const newEl = createNewElement("text", {
+      x,
+      y,
       width: 400,
-      rotation: 0,
-      opacity: 1.0,
       fontFamily: fontsList[0]?.family || "Roboto",
-      fontSize: 48,
-      fontWeight: 700,
-      fill: "#111111",
-      align: "left",
-      lineHeight: 1.2,
-    };
-    const nextCanvas = { ...canvas, elements: [...canvas.elements, newEl] };
-    setCanvas(nextCanvas);
+    });
+    setCanvas((prevCanvas) => {
+      if (!prevCanvas) return prevCanvas;
+      const nextCanvas = { ...prevCanvas, elements: [...prevCanvas.elements, newEl] };
+      triggerAutosave(nextCanvas);
+      return nextCanvas;
+    });
     setSelectedId(newEl.id);
-    triggerAutosave(nextCanvas);
   }
 
   function addShapeElement(shapeType) {
     if (!canvas) return;
-    const newEl = {
-      id: "shape_" + Math.random().toString(36).substr(2, 9),
-      type: "shape",
+    const width = shapeType === "rect" ? 250 : 200;
+    const height = shapeType === "rect" ? 180 : 200;
+    const { x, y } = computeCenterPosition(width, height, canvas.width, canvas.height);
+    const newEl = createNewElement("shape", {
       shape: shapeType,
-      x: Math.round(canvas.width / 4),
-      y: Math.round(canvas.height / 4),
-      width: 250,
-      height: 180,
-      rotation: 0,
-      opacity: 1.0,
-      fill: shapeType === "rect" ? "#6366F1" : "#EC4899",
-      stroke: "#000000",
-      strokeWidth: 0,
-      cornerRadius: shapeType === "rect" ? 12 : 0,
-    };
-    const nextCanvas = { ...canvas, elements: [...canvas.elements, newEl] };
-    setCanvas(nextCanvas);
+      x,
+      y,
+      width,
+      height,
+    });
+    setCanvas((prevCanvas) => {
+      if (!prevCanvas) return prevCanvas;
+      const nextCanvas = { ...prevCanvas, elements: [...prevCanvas.elements, newEl] };
+      triggerAutosave(nextCanvas);
+      return nextCanvas;
+    });
     setSelectedId(newEl.id);
-    triggerAutosave(nextCanvas);
   }
 
   function addImageElement(asset) {
     if (!canvas) return;
-    const newEl = {
-      id: "img_" + Math.random().toString(36).substr(2, 9),
-      type: "image",
+    const width = Math.min(400, asset.width || 400);
+    const height = Math.min(400, asset.height || 400);
+    const { x, y } = computeCenterPosition(width, height, canvas.width, canvas.height);
+    const newEl = createNewElement("image", {
       assetId: asset.id,
-      x: Math.round(canvas.width / 4),
-      y: Math.round(canvas.height / 4),
-      width: Math.min(400, asset.width || 400),
-      height: Math.min(400, asset.height || 400),
-      rotation: 0,
-      opacity: 1.0,
-      filters: { brightness: 0, contrast: 0, saturation: 0, grayscale: false },
-    };
+      x,
+      y,
+      width,
+      height,
+    });
     setAssetUrls((prev) => ({ ...prev, [asset.id]: asset.url }));
-    const nextCanvas = { ...canvas, elements: [...canvas.elements, newEl] };
-    setCanvas(nextCanvas);
+    setCanvas((prevCanvas) => {
+      if (!prevCanvas) return prevCanvas;
+      const nextCanvas = { ...prevCanvas, elements: [...prevCanvas.elements, newEl] };
+      triggerAutosave(nextCanvas);
+      return nextCanvas;
+    });
     setSelectedId(newEl.id);
-    triggerAutosave(nextCanvas);
+  }
+
+  function handleDropElement(payload, pointerPosition) {
+    if (!canvas) return;
+    const width = payload.width || (payload.type === "text" ? 400 : 250);
+    const height = payload.height || (payload.type === "shape" ? 180 : 200);
+    const { x, y } = computeDropPosition(
+      pointerPosition,
+      scaleFactor,
+      width,
+      height,
+      canvas.width,
+      canvas.height
+    );
+
+    if (payload.type === "image" && payload.assetUrl && payload.assetId) {
+      setAssetUrls((prev) => ({ ...prev, [payload.assetId]: payload.assetUrl }));
+    }
+
+    const newEl = createNewElement(payload.type, {
+      ...payload,
+      x,
+      y,
+      width,
+      height,
+      fontFamily: payload.type === "text" ? (fontsList[0]?.family || "Roboto") : undefined,
+    });
+
+    setCanvas((prevCanvas) => {
+      if (!prevCanvas) return prevCanvas;
+      const nextCanvas = { ...prevCanvas, elements: [...prevCanvas.elements, newEl] };
+      triggerAutosave(nextCanvas);
+      return nextCanvas;
+    });
+    setSelectedId(newEl.id);
   }
 
   async function handleAssetUpload(e) {
@@ -244,15 +291,6 @@ export default function EditorPage() {
     } catch (err) {
       console.error("Asset upload failed", err);
     }
-  }
-
-  function deleteSelectedElement() {
-    if (!selectedId || !canvas) return;
-    const nextElements = canvas.elements.filter((el) => el.id !== selectedId);
-    const nextCanvas = { ...canvas, elements: nextElements };
-    setCanvas(nextCanvas);
-    setSelectedId(null);
-    triggerAutosave(nextCanvas);
   }
 
   // Layer Order Operations
@@ -406,7 +444,15 @@ export default function EditorPage() {
             <div className="grid grid-cols-3 gap-2">
               <button
                 onClick={addTextElement}
-                className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 hover:border-slate-700 transition"
+                draggable="true"
+                onDragStart={(e) => {
+                  e.dataTransfer.setData(
+                    "application/pixelforge-element",
+                    JSON.stringify({ type: "text", text: "Heading Text", width: 400 })
+                  );
+                  e.dataTransfer.effectAllowed = "copy";
+                }}
+                className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 hover:border-slate-700 transition cursor-grab active:cursor-grabbing"
               >
                 <Type size={20} className="text-indigo-400 mb-1" />
                 <span className="text-[11px] font-medium">Text</span>
@@ -414,7 +460,15 @@ export default function EditorPage() {
 
               <button
                 onClick={() => addShapeElement("rect")}
-                className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 hover:border-slate-700 transition"
+                draggable="true"
+                onDragStart={(e) => {
+                  e.dataTransfer.setData(
+                    "application/pixelforge-element",
+                    JSON.stringify({ type: "shape", shape: "rect", width: 250, height: 180 })
+                  );
+                  e.dataTransfer.effectAllowed = "copy";
+                }}
+                className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 hover:border-slate-700 transition cursor-grab active:cursor-grabbing"
               >
                 <Square size={20} className="text-indigo-400 mb-1" />
                 <span className="text-[11px] font-medium">Rectangle</span>
@@ -422,7 +476,15 @@ export default function EditorPage() {
 
               <button
                 onClick={() => addShapeElement("ellipse")}
-                className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 hover:border-slate-700 transition"
+                draggable="true"
+                onDragStart={(e) => {
+                  e.dataTransfer.setData(
+                    "application/pixelforge-element",
+                    JSON.stringify({ type: "shape", shape: "ellipse", width: 200, height: 200 })
+                  );
+                  e.dataTransfer.effectAllowed = "copy";
+                }}
+                className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 hover:border-slate-700 transition cursor-grab active:cursor-grabbing"
               >
                 <Circle size={20} className="text-indigo-400 mb-1" />
                 <span className="text-[11px] font-medium">Ellipse</span>
@@ -477,15 +539,29 @@ export default function EditorPage() {
                 <div
                   key={asset.id}
                   onClick={() => addImageElement(asset)}
-                  className="group relative cursor-pointer aspect-square rounded-lg border border-slate-800 bg-slate-800/40 overflow-hidden hover:border-indigo-500 transition flex items-center justify-center p-1"
+                  draggable="true"
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(
+                      "application/pixelforge-element",
+                      JSON.stringify({
+                        type: "image",
+                        assetId: asset.id,
+                        assetUrl: asset.url,
+                        width: Math.min(400, asset.width || 400),
+                        height: Math.min(400, asset.height || 400),
+                      })
+                    );
+                    e.dataTransfer.effectAllowed = "copy";
+                  }}
+                  className="group relative cursor-grab active:cursor-grabbing aspect-square rounded-lg border border-slate-800 bg-slate-850 overflow-hidden hover:border-indigo-500 transition flex items-center justify-center p-1"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={asset.url}
                     alt={asset.filename}
-                    className="max-h-full max-w-full object-contain"
+                    className="max-h-full max-w-full object-contain pointer-events-none"
                   />
-                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition">
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition pointer-events-none">
                     <span className="text-[10px] text-white font-semibold">Add</span>
                   </div>
                 </div>
@@ -502,6 +578,7 @@ export default function EditorPage() {
             selectedId={selectedId}
             onSelectElement={(id) => setSelectedId(id)}
             onUpdateElement={handleUpdateElement}
+            onDropElement={handleDropElement}
             stageScale={scaleFactor}
           />
         </section>
